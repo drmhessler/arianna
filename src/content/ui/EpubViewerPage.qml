@@ -25,26 +25,41 @@ Kirigami.Page {
     property var layouts: {
         'auto': {
             'renderTo': "'viewer'",
-            'options': { width: '100%', flow: 'paginated', maxSpreadColumns: 2 }
+            'options': {
+                width: '100%',
+                flow: 'paginated',
+                maxSpreadColumns: 2
+            }
         },
         'single': {
             renderTo: "'viewer'",
-            options: { width: '100%', flow: 'paginated', spread: 'none' }
+            options: {
+                width: '100%',
+                flow: 'paginated',
+                spread: 'none'
+            }
         },
         'scrolled': {
             renderTo: 'document.body',
-            options: { width: '100%', flow: 'scrolled-doc' },
+            options: {
+                width: '100%',
+                flow: 'scrolled-doc'
+            }
         },
         'continuous': {
             renderTo: 'document.body',
-            options: { width: '100%', flow: 'scrolled', manager: 'continuous' },
+            options: {
+                width: '100%',
+                flow: 'scrolled',
+                manager: 'continuous'
+            }
         }
     }
 
     signal relocated(newLocation: var, newProgress: int)
     signal locationsLoaded(locations: var)
     signal bookReady(title: var)
-    signal bookClosed()
+    signal bookClosed
 
     function reloadBook() {
         if (!root.url || view.loading) {
@@ -68,7 +83,7 @@ Kirigami.Page {
         id: searchDialog
 
         onAccepted: if (text === '') {
-            view.runJavaScript(`find.clearHighlight()`)
+            view.runJavaScript(`find.clearHighlight()`);
             searchResultModel.clear();
         } else {
             searchResultModel.search(text);
@@ -93,7 +108,7 @@ Kirigami.Page {
             required property string cfi
 
             onClicked: {
-                view.runJavaScript(`reader.view.goTo('${cfi}')`)
+                view.runJavaScript(`reader.view.goTo('${cfi}')`);
                 searchDialog.close();
             }
 
@@ -125,7 +140,7 @@ Kirigami.Page {
             text: i18nc("@action:intoolbar", "Search")
             displayHint: Kirigami.DisplayHint.IconOnly
             icon.name: "system-search-symbolic"
-            onTriggered: searchDialog.open();
+            onTriggered: searchDialog.open()
         },
         Kirigami.Action {
             text: i18n("Book Details")
@@ -134,8 +149,8 @@ Kirigami.Page {
             enabled: backend.metadata
             onTriggered: {
                 applicationWindow().pageStack.pushDialogLayer(Qt.resolvedUrl("./BookDetailsPage.qml"), {
-                    metadata: root.entry,
-                })
+                    metadata: root.entry
+                });
             }
         }
     ]
@@ -143,8 +158,8 @@ Kirigami.Page {
     SearchModel {
         id: searchResultModel
 
-        onSearchTriggered: (text) => {
-            view.runJavaScript(`reader.search('${text}')`)
+        onSearchTriggered: text => {
+            view.runJavaScript(`reader.search('${text}')`);
         }
     }
 
@@ -156,14 +171,14 @@ Kirigami.Page {
         helpfulAction: Kirigami.Action {
             text: i18n("Open file")
             onTriggered: {
-                const fileDialog = openFileDialog.createObject(QQC2.ApplicationWindow.overlay)
+                const fileDialog = openFileDialog.createObject(QQC2.ApplicationWindow.overlay);
                 fileDialog.accepted.connect(() => {
                     const file = fileDialog.file;
                     if (!file) {
                         return;
                     }
                     root.url = file;
-                })
+                });
                 fileDialog.open();
             }
         }
@@ -199,7 +214,7 @@ Kirigami.Page {
         }
 
         onJavaScriptConsoleMessage: (level, message, lineNumber, sourceID) => {
-            console.error('WEB:', level, message, lineNumber, sourceID)
+            console.error('WEB:', level, message, lineNumber, sourceID);
         }
         onLoadingChanged: reloadBook()
 
@@ -211,6 +226,14 @@ Kirigami.Page {
             view.runJavaScript('reader.view.prev()');
         }
 
+        function nextSection() {
+            view.runJavaScript('reader.view.nextSection()');
+        }
+
+        function prevSection() {
+            view.runJavaScript('reader.view.prevSection()');
+        }
+
         function goTo(cfi) {
             view.runJavaScript('reader.view.goTo("' + cfi + '")');
         }
@@ -220,9 +243,10 @@ Kirigami.Page {
             Connections {
                 target: backend
                 function onSelectionChanged() {
-                    selectionPopup.popup()
+                    console.log(backend.selection.text)
+                    selectionPopup.popup();
                 }
-            }
+            }               
 
             QQC2.MenuItem {
                 text: i18n("Copy")
@@ -231,9 +255,20 @@ Kirigami.Page {
             }
 
             QQC2.MenuItem {
+                text: i18n("Translate")
+                icon.name: 'translate'
+                onClicked: Clipboard.saveText(backend.selection.text)
+            }
+
+            QQC2.MenuItem {
+                text: i18n("Open AI")
+                icon.name: 'open-ai'
+                onClicked: Clipboard.saveText(backend.selection.text)
+            }
+            QQC2.MenuItem {
                 text: i18n("Find")
                 icon.name: 'search'
-                onClicked: view.runJavaScript(`find.find('${backend.selection.text}', true, true)`);
+                onClicked: view.runJavaScript(`find.find('${backend.selection.text}', true, true)`)
             }
         }
     }
@@ -242,11 +277,27 @@ Kirigami.Page {
     MouseArea {
         anchors.fill: view
         acceptedButtons: Qt.NoButton
-        onWheel: (event) => {
-            if (event.angleDelta.y > 0) {
-                view.prev()
-            } else {
-                view.next()
+
+        onWheel: event => {
+            if (event.modifiers & Qt.ControlModifier && Math.abs(event.angleDelta.y) > 0) {
+                if (event.angleDelta.y > 0) {
+                        view.zoomFactor += 0.1;
+                } else {
+                    view.zoomFactor -= 0.1;
+                }
+            } else if (Math.abs(event.angleDelta.y) > 0) {
+                if (event.angleDelta.y > 0) {
+                    view.prev();
+                } else {
+                    view.next();
+                }
+            }
+            if (Math.abs(event.angleDelta.x) > 0) {
+                if (event.angleDelta.x > 0) {
+                    view.prevSection();
+                } else {
+                    view.nextSection();
+                }
             }
         }
     }
@@ -260,9 +311,9 @@ Kirigami.Page {
                 property bool isMenuOpen: false
                 onClicked: {
                     isMenuOpen = !isMenuOpen;
-                    if(isMenuOpen){
-                        menu.popup(progressButton, 0, - menu.height)
-                    }else{
+                    if (isMenuOpen) {
+                        menu.popup(progressButton, 0, -menu.height);
+                    } else {
                         menu.close();
                     }
                 }
@@ -304,15 +355,15 @@ Kirigami.Page {
                 value: backend.progress
                 onValueChanged: {
                     if (pressed) {
-        	            backend.progress = value
+                        backend.progress = value;
                     }
                 }
-	            onPressedChanged: {
-    	            if (!pressed) {
-        	            backend.progress = value
-        	            view.runJavaScript(`reader.view.goToFraction(${value})`)
-    	            }
-	            }
+                onPressedChanged: {
+                    if (!pressed) {
+                        backend.progress = value;
+                        view.runJavaScript(`reader.view.goToFraction(${value})`);
+                    }
+                }
                 live: false
                 Layout.fillWidth: true
             }
@@ -343,10 +394,10 @@ Kirigami.Page {
         property int timeInBook: 0
 
         function get(script, callback) {
-            return view.runJavaScript(`JSON.stringify(${script})`, callback)
+            return view.runJavaScript(`JSON.stringify(${script})`, callback);
         }
         onMetadataChanged: if (metadata) {
-            view.runJavaScript('reader.view.renderer.next()')
+            view.runJavaScript('reader.view.renderer.next()');
         }
         function dispatch(action) {
             switch (action.type) {
@@ -366,17 +417,19 @@ Kirigami.Page {
                         "glossary": i18n("Definition"),
                         "glossary-go": i18n("Go to Definition"),
                         "biblioentry": i18n("Bibliography"),
-                        "biblioentry-go": i18n("Go to Bibliography"),
-                    },
-                }
+                        "biblioentry-go": i18n("Go to Bibliography")
+                    }
+                };
 
-                view.runJavaScript(`init({'uiText': ${JSON.stringify(uiText)}})`)
+                view.runJavaScript(`init({'uiText': ${JSON.stringify(uiText)}})`);
                 break;
             case 'book-ready':
                 searchResultModel.clear();
                 searchResultModel.loading = false;
 
-                const { book } = action.payload;
+                const {
+                    book
+                } = action.payload;
                 if (book && book.toc) {
                     applicationWindow().contextDrawer.model.importFromJson(JSON.stringify(book.toc));
                 } else {
@@ -411,7 +464,7 @@ Kirigami.Page {
                 searchResultModel.resultFound(action.payload.q, action.payload.results);
                 break;
             case 'external-link':
-                Qt.openUrlExternally(action.payload.href)
+                Qt.openUrlExternally(action.payload.href);
                 break;
             }
         }
@@ -422,17 +475,21 @@ Kirigami.Page {
                 const green = bgColor.g;
                 const blue = bgColor.b;
                 const l = 0.299 * red + 0.587 * green + 0.114 * blue;
-                if (l < 0.3) return 'Night';
-                else if (l < 0.7) return 'Gray';
-                else if (red > green && green > blue) return 'Sepia';
-                else return 'White';
-            }
+                if (l < 0.3)
+                    return 'Night';
+                else if (l < 0.7)
+                    return 'Gray';
+                else if (red > green && green > blue)
+                    return 'Sepia';
+                else
+                    return 'White';
+            };
             const fontDesc = Config.defaultFont;
-            const fontFamily = fontDesc.family
-            const fontSizePt = fontDesc.pointSize
-            const fontSize = fontDesc.pixelSize
-            let fontWeight = 400
-            const fontStyle = fontDesc.styleName
+            const fontFamily = fontDesc.family;
+            const fontSizePt = fontDesc.pointSize;
+            const fontSize = fontDesc.pixelSize;
+            let fontWeight = 400;
+            const fontStyle = fontDesc.styleName;
 
             const style = {
                 layout: {
@@ -440,8 +497,9 @@ Kirigami.Page {
                     maxInlineSize: 720,
                     maxBlockSize: 1440,
                     maxColumnCount: 2,
-                    flow: 'paginated', // 'scrolled'
-                    animated: true,
+                    flow: 'paginated' // 'scrolled'
+                    ,
+                    animated: true
                 },
                 style: {
                     lineHeight: 1.5,
@@ -451,7 +509,7 @@ Kirigami.Page {
                     theme: {
                         light: {
                             fg: Config.invert ? Kirigami.Theme.backgroundColor.toString() : Kirigami.Theme.textColor.toString(),
-                            bg: Config.invert ? Kirigami.Theme.textColor.toString() : Kirigami.Theme.backgroundColor.toString() 
+                            bg: Config.invert ? Kirigami.Theme.textColor.toString() : Kirigami.Theme.backgroundColor.toString()
                         },
                         dark: {
                             fg: Config.invert ? Kirigami.Theme.backgroundColor.toString() : Kirigami.Theme.textColor.toString(),
@@ -459,11 +517,11 @@ Kirigami.Page {
                         }
                     },
                     overrideFont: !Config.usePublisherFont,
-                    userStylesheet: '',
+                    userStylesheet: ''
                 }
-            }
+            };
 
-            view.runJavaScript(`reader.setAppearance(${JSON.stringify(style)})`)
+            view.runJavaScript(`reader.setAppearance(${JSON.stringify(style)})`);
         }
     }
 

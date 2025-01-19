@@ -351,6 +351,13 @@ export class View extends HTMLElement {
     async next(distance) {
         await this.renderer.next(distance)
     }
+    async prevSection() {
+        await this.renderer.prevSection()
+    }
+    async nextSection() {
+        await this.renderer.nextSection()
+    }
+
     goLeft() {
         return this.book.dir === 'rtl' ? this.next() : this.prev()
     }

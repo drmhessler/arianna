@@ -178,10 +178,10 @@ const getCSS = ({
         }
     }
     @media screen {
-        html {
-            color-scheme: ${invert ? 'only light' : 'light dark'};
-            color: ${theme.light.fg};
-        }
+        // html {
+        //     color-scheme: ${invert ? 'only light' : 'light dark'};
+        //     color: ${theme.light.fg};
+        // }
         a:any-link {
             color: ${theme.light.link};
         }
@@ -578,29 +578,37 @@ class Reader {
             text = sel.toString()
         }
         const content = range.toString()
-        globalThis.showSelection({ type: 'selection', text, content, lang, value, pos }).then(action => {
-            switch (action) {
-                case 'copy': getHTML(range).then(html =>
-                    dispatch({ type: 'selection', payload: { action, text, html } }))
-                    break
-                case 'copy-citation':
-                    dispatch({ type: 'selection', payload: { action, text, value,
-                        ...this.view.getProgressOf(index, range) }})
-                    break
-                case 'highlight':
-                    this.#showAnnotation({ index, range, value, pos })
-                    break
-                case 'print':
-                    this.printRange(range.startContainer.ownerDocument, range)
-                    break
-                case 'speak-from-here':
-                    this.view.initTTS().then(() => dispatch({
-                        type: 'selection', payload: { action,
-                        ssml: this.view.tts.from(range),
-                    }}))
-                    break
-            }
-        })
+
+        dispatch({ type: 'selection', payload: { text, lang  } })
+        // globalThis.showSelection({ type: 'selection', text, content, lang, value, pos }).then(action => {
+        //     switch (action) {
+        //         case 'copy': getHTML(range).then(html =>
+        //             dispatch({ type: 'selection', payload: { action, text, html } }))
+        //             break
+        //         case 'copy-citation':
+        //             dispatch({
+        //                 type: 'selection', payload: {
+        //                     action, text, value,
+        //                     ...this.view.getProgressOf(index, range)
+        //                 }
+        //             })
+        //             break
+        //         case 'highlight':
+        //             this.#showAnnotation({ index, range, value, pos })
+        //             break
+        //         case 'print':
+        //             this.printRange(range.startContainer.ownerDocument, range)
+        //             break
+        //         case 'speak-from-here':
+        //             this.view.initTTS().then(() => dispatch({
+        //                 type: 'selection', payload: {
+        //                     action,
+        //                     ssml: this.view.tts.from(range),
+        //                 }
+        //             }))
+        //             break
+        //     }
+        // })
     }
 
     createTocMap() {
@@ -632,10 +640,10 @@ class Reader {
 
         for (const [index, section] of this.book.sections.entries()) {
             const doc = await section.createDocument();
-            
+
             // Get the chapter name(label) for this section from the TOC map
             const chapterName = tocMap.get(index) || `Chapter ${index + 1}`;
-            
+
             for (const result of matcher(doc, query)) {
                 const cfi = this.view.getCFI(index, result.range);
                 results.push({
@@ -649,7 +657,7 @@ class Reader {
         dispatch({ type: 'find-results', payload: { query, results } });
         return results;
     }
-    
+
     printRange(doc, range) {
         const iframe = document.createElement('iframe')
         // NOTE: it needs `allow-scripts` to remove the frame after printing
@@ -710,7 +718,7 @@ globalThis.find = {
 }
 
 globalThis.visualViewport.addEventListener('resize', () =>
-    dispatch({ type: 'pinch-zoom', payload: { scale: globalThis.visualViewport.scale }}))
+    dispatch({ type: 'pinch-zoom', payload: { scale: globalThis.visualViewport.scale } }))
 
 const printf = (str, args) => {
     for (const arg of args) str = str.replace('%s', arg)
