@@ -18,6 +18,9 @@ Kirigami.Page {
     property string filename
     property string locations
     property string currentLocation
+    property real zoomLevel: 1.0
+    property var reloadLocation: null
+    property string identifier
     property var entry: null
     readonly property color readerTheme: Kirigami.Theme.backgroundColor
     readonly property bool hideSidebar: true
@@ -25,37 +28,64 @@ Kirigami.Page {
     property var layouts: {
         'auto': {
             'renderTo': "'viewer'",
-            'options': { width: '100%', flow: 'paginated', maxSpreadColumns: 2 }
+            'options': {
+                width: '100%',
+                flow: 'paginated',
+                maxSpreadColumns: 2
+            }
         },
         'single': {
             renderTo: "'viewer'",
-            options: { width: '100%', flow: 'paginated', spread: 'none' }
+            options: {
+                width: '100%',
+                flow: 'paginated',
+                spread: 'none'
+            }
         },
         'scrolled': {
             renderTo: 'document.body',
-            options: { width: '100%', flow: 'scrolled-doc' },
+            options: {
+                width: '100%',
+                flow: 'scrolled-doc'
+            }
         },
         'continuous': {
             renderTo: 'document.body',
-            options: { width: '100%', flow: 'scrolled', manager: 'continuous' },
+            options: {
+                width: '100%',
+                flow: 'scrolled',
+                manager: 'continuous'
+            }
         }
     }
 
     signal relocated(newLocation: var, newProgress: int)
     signal locationsLoaded(locations: var)
+    signal zoomLevelSaved(zoomLevel: real)
     signal bookReady(title: var)
-    signal bookClosed()
+    signal bookClosed
 
-    function reloadBook(): void {
-        if (!root.url || view.loading) {
+    function reloadBook() {
+        if (!root.url || view.loading || !view.readerReady || !root.entry) {
             return;
         }
         // HACK: renderTo and options are the value of layouts.auto, but referencing layouts.auto here crashes
         const renderTo = "'viewer'";
-        const options = JSON.stringify({ width: '100%', flow: 'paginated', maxSpreadColumns: 2 });
-        const urlNormalized = JSON.stringify('http://127.0.0.1:45961/book?token=' + Navigation.bookServerToken + '&url=' + encodeURIComponent(root.url));
-        const initCfi = currentLocation ? JSON.stringify(currentLocation) : "null";
-        console.info("opening book", root.url, " to ", initCfi);
+        const options = JSON.stringify({
+            width: '100%',
+            flow: 'paginated',
+            maxSpreadColumns: 2
+        });
+
+        const bookUrl = root.entry && root.entry.identifier
+            ? "http://127.0.0.1:45961/" + encodeURIComponent(root.entry.identifier) + "/book.epub"
+            : "http://127.0.0.1:45961/book?url=" + encodeURIComponent(root.url);
+        const urlNormalized = JSON.stringify(bookUrl);
+        console.info("opening book", urlNormalized, renderTo, options);
+        const initLocation = reloadLocation ? reloadLocation : currentLocation;
+        const initCfi = initLocation ? JSON.stringify(initLocation) : "null";
+        reloadLocation = null;
+        view.bookReady = false;
         view.runJavaScript(`openSync(${urlNormalized}, ${initCfi})`);
     }
 
@@ -65,11 +95,21 @@ Kirigami.Page {
     onUrlChanged: reloadBook()
     onReaderThemeChanged: backend.applyStyle()
 
+    Connections {
+        target: Config
+        function onInvertChanged() {
+            backend.applyStyle();
+        }
+        function onKdeThemingChanged() {
+            backend.applyStyle();
+        }
+    }
+
     Kirigami.SearchDialog {
         id: searchDialog
 
         onAccepted: if (text === '') {
-            view.runJavaScript(`find.clearHighlight()`)
+            view.runJavaScript(`find.clearHighlight()`);
             searchResultModel.clear();
         } else {
             searchResultModel.search(text);
@@ -94,7 +134,7 @@ Kirigami.Page {
             required property string cfi
 
             onClicked: {
-                view.runJavaScript(`reader.view.goTo('${cfi}')`)
+                view.goTo(cfi);
                 searchDialog.close();
             }
 
@@ -126,7 +166,7 @@ Kirigami.Page {
             text: i18nc("@action:intoolbar", "Search")
             displayHint: Kirigami.DisplayHint.IconOnly
             icon.name: "system-search-symbolic"
-            onTriggered: searchDialog.open();
+            onTriggered: searchDialog.open()
         },
         Kirigami.Action {
             text: i18n("Book Details")
@@ -135,8 +175,8 @@ Kirigami.Page {
             enabled: backend.metadata
             onTriggered: {
                 applicationWindow().pageStack.pushDialogLayer(Qt.resolvedUrl("./BookDetailsPage.qml"), {
-                    metadata: root.entry,
-                })
+                    metadata: root.entry
+                });
             }
         }
     ]
@@ -144,8 +184,10 @@ Kirigami.Page {
     SearchModel {
         id: searchResultModel
 
-        onSearchTriggered: (text) => {
-            view.runJavaScript(`reader.search('${text}')`)
+        onSearchTriggered: text => {
+            if (view.bookReady) {
+                view.runJavaScript(`reader.search(${JSON.stringify(text)})`);
+            }
         }
     }
 
@@ -157,14 +199,14 @@ Kirigami.Page {
         helpfulAction: Kirigami.Action {
             text: i18n("Open file")
             onTriggered: {
-                const fileDialog = openFileDialog.createObject(QQC2.ApplicationWindow.overlay)
+                const fileDialog = openFileDialog.createObject(QQC2.ApplicationWindow.overlay);
                 fileDialog.accepted.connect(() => {
                     const file = fileDialog.file;
                     if (!file) {
                         return;
                     }
                     root.url = file;
-                })
+                });
                 fileDialog.open();
             }
         }
@@ -188,32 +230,143 @@ Kirigami.Page {
         }
     }
 
+    Connections {
+        target: Translator
+        function onTranslationReady(translatedString) {
+            backend.showTranslation(translatedString);
+        }
+    }
+
+    Window {
+        id: translatorDialog
+        visible: false
+        title: i18nc("@title:window", "Translation")
+        transientParent: applicationWindow()
+        modality: Qt.NonModal
+        flags: Qt.Dialog
+        width: Kirigami.Units.gridUnit * 28
+        height: Kirigami.Units.gridUnit * 14
+
+        function open() {
+            show();
+            raise();
+        }
+
+        QQC2.Pane {
+            anchors.fill: parent
+
+            contentItem: ColumnLayout {
+                spacing: Kirigami.Units.smallSpacing
+
+                QQC2.TextArea {
+                    id: sourceText
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    readOnly: true
+                    wrapMode: Text.Wrap
+                }
+            }
+        }
+    }
+
+    FocusScope {
+        id: focusScope
+        anchors.fill: parent
+        focus: true // Set focus to the FocusScope
+        focusPolicy: Qt.StrongFocus
+        onFocusChanged: {
+            if (!focusScope.focus) {
+                focusScope.forceActiveFocus();
+            }
+        }
+        Keys.onPressed: event => {
+            if (event.modifiers & Qt.ControlModifier) {
+                if (event.key === Qt.Key_Left) {
+                    view.prevSection();
+                } else if (event.key === Qt.Key_Right) {
+                    view.nextSection();
+                } else if (event.key === Qt.Key_E) {
+                    if (root.filename) {
+                        EditorProcess.start('/usr/local/bin/ebook-edit-check', [root.filename]);
+                    }
+                }
+            } else {
+                if (event.key === Qt.Key_Left) {
+                    view.prev();
+                } else if (event.key === Qt.Key_Right) {
+                    view.next();
+                }
+            }
+            event.accepted = true;
+        }
+    }
+
     WebEngineView {
         id: view
         anchors.fill: parent
         url: Qt.resolvedUrl("main.html")
         visible: root.url !== ''
         webChannel: channel
+        property bool readerReady: false
+        property bool bookReady: false
 
+        settings.javascriptEnabled: true
+        settings.localContentCanAccessRemoteUrls: true
+        settings.localContentCanAccessFileUrls: true
+
+        Component.onCompleted: view.zoomFactor = root.zoomLevel > 0 ? root.zoomLevel : 1.0
+
+        onCertificateError: error => {
+            const u = error.url;
+
+            if (u.scheme === "https" && (u.host === "127.0.0.1" || u.host === "localhost") && u.port === 45962 && error.overridable) {
+                console.warn("Accepting local bookserver TLS certificate:", error.description);
+                error.acceptCertificate();
+                return;
+            }
+
+            error.rejectCertificate();
+        }
         onVisibleChanged: if (!visible) {
             root.bookClosed();
         }
 
         onJavaScriptConsoleMessage: (level, message, lineNumber, sourceID) => {
-            console.error('WEB:', level, message, lineNumber, sourceID)
+            console.error('WEB:', level, message, lineNumber, sourceID);
         }
-        onLoadingChanged: reloadBook()
+        onLoadingChanged: if (loading) {
+            readerReady = false;
+            bookReady = false;
+        }
 
         function next() {
-            view.runJavaScript('reader.view.next()');
+            if (bookReady) {
+                view.runJavaScript('reader.view.next()');
+            }
         }
 
         function prev() {
-            view.runJavaScript('reader.view.prev()');
+            if (bookReady) {
+                view.runJavaScript('reader.view.prev()');
+            }
+        }
+
+        function nextSection() {
+            if (bookReady) {
+                view.runJavaScript('reader.view.nextSection()');
+            }
+        }
+
+        function prevSection() {
+            if (bookReady) {
+                view.runJavaScript('reader.view.prevSection()');
+            }
         }
 
         function goTo(cfi) {
-            view.runJavaScript('reader.view.goTo("' + cfi + '")');
+            if (bookReady) {
+                view.runJavaScript('reader.view.goTo("' + cfi + '")');
+            }
         }
 
         QQC2.Menu {
@@ -221,41 +374,75 @@ Kirigami.Page {
             Connections {
                 target: backend
                 function onSelectionChanged() {
-                    selectionPopup.popup()
+                    Qt.callLater(selectionPopup.popup);
                 }
             }
 
             QQC2.MenuItem {
                 text: i18n("Copy")
                 icon.name: 'edit-copy'
-                onClicked: Clipboard.saveText(backend.selection.text)
+                onClicked: view.runJavaScript("selectionAction('copy')")
             }
 
             QQC2.MenuItem {
                 text: i18n("Find")
                 icon.name: 'search'
-                onClicked: view.runJavaScript(`find.find('${backend.selection.text}', true, true)`);
+                onClicked: view.runJavaScript("selectionAction('find')")
+            }
+
+            QQC2.MenuItem {
+                text: i18n("Translate")
+                icon.name: 'edit-find-replace'
+                onClicked: view.runJavaScript("selectionAction('translate')")
             }
         }
     }
 
-    // Allows the user to move pages by rotating the wheel
+    // Allows the user to move pages by rotating the wheel or zoom with Ctrl+wheel
     MouseArea {
         anchors.fill: view
         acceptedButtons: Qt.NoButton
-        onWheel: (event) => {
-            let dx = event.angleDelta.x;
-            let dy = event.angleDelta.y;
+        onWheel: event => {
+            if (event.modifiers & Qt.ControlModifier) {
+                const dx = event.angleDelta.x;
+                const dy = event.angleDelta.y;
 
-            // ignore tiny movements
-            if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-
-            if (Math.abs(dx) > Math.abs(dy)) {
-                if (dx > 0) view.prev();
-                else if (dx < 0) view.next();
+                // Adjust page width with horizontal Ctrl-wheel
+                if (Math.abs(dx) > Math.abs(dy)) {
+                    const step = 25;
+                    const newWidth = Config.maxWidth + (dx < 0 ? step : -step);
+                    Config.maxWidth = Math.max(100, newWidth);
+                    Config.save();
+                    backend.applyStyle();
+                } else {
+                    // Zoom functionality with vertical Ctrl-wheel
+                    if (dy > 0) {
+                        view.zoomFactor = Math.min(view.zoomFactor + 0.1, 3.0);
+                    } else if (dy < 0) {
+                        view.zoomFactor = Math.max(view.zoomFactor - 0.1, 0.5);
+                    }
+                    root.zoomLevelSaved(view.zoomFactor);
+                }
             } else {
-                if (dy > 0) view.prev();
-                else if (dy < 0) view.next();
+                // Navigation functionality
+                let dx = event.angleDelta.x;
+                let dy = event.angleDelta.y;
+
+                // ignore tiny movements
+                if (Math.abs(dx) < 1 && Math.abs(dy) < 1)
+                    return;
+
+                if (Math.abs(dx) > Math.abs(dy)) {
+                    if (dx > 0)
+                        view.prevSection();
+                    else if (dx < 0)
+                        view.nextSection();
+                } else {
+                    if (dy > 0)
+                        view.prev();
+                    else if (dy < 0)
+                        view.next();
+                }
             }
         }
     }
@@ -269,9 +456,9 @@ Kirigami.Page {
                 property bool isMenuOpen: false
                 onClicked: {
                     isMenuOpen = !isMenuOpen;
-                    if(isMenuOpen){
-                        menu.popup(progressButton, 0, - menu.height)
-                    }else{
+                    if (isMenuOpen) {
+                        menu.popup(progressButton, 0, -menu.height);
+                    } else {
                         menu.close();
                     }
                 }
@@ -313,15 +500,17 @@ Kirigami.Page {
                 value: backend.progress
                 onValueChanged: {
                     if (pressed) {
-        	            backend.progress = value
+                        backend.progress = value;
                     }
                 }
-	            onPressedChanged: {
-    	            if (!pressed) {
-        	            backend.progress = value
-        	            view.runJavaScript(`reader.view.goToFraction(${value})`)
-    	            }
-	            }
+                onPressedChanged: {
+                    if (!pressed) {
+                        backend.progress = value;
+                        if (view.bookReady) {
+                            view.runJavaScript(`reader.view.goToFraction(${value})`);
+                        }
+                    }
+                }
                 live: false
                 Layout.fillWidth: true
             }
@@ -350,12 +539,12 @@ Kirigami.Page {
         property string file: root.url
         property int timeInChapter: 0
         property int timeInBook: 0
-
         function get(script, callback) {
-            return view.runJavaScript(`JSON.stringify(${script})`, callback)
+            return view.runJavaScript(`JSON.stringify(${script})`, callback);
         }
-        onMetadataChanged: if (metadata) {
-            view.runJavaScript('reader.view.renderer.next()')
+        function showTranslation(text) {
+            sourceText.text = text;
+            translatorDialog.open();
         }
         function dispatch(action) {
             switch (action.type) {
@@ -375,17 +564,22 @@ Kirigami.Page {
                         "glossary": i18n("Definition"),
                         "glossary-go": i18n("Go to Definition"),
                         "biblioentry": i18n("Bibliography"),
-                        "biblioentry-go": i18n("Go to Bibliography"),
-                    },
-                }
+                        "biblioentry-go": i18n("Go to Bibliography")
+                    }
+                };
 
-                view.runJavaScript(`init({'uiText': ${JSON.stringify(uiText)}})`)
+                view.readerReady = true;
+                view.runJavaScript(`init({'uiText': ${JSON.stringify(uiText)}})`);
+                root.reloadBook();
                 break;
             case 'book-ready':
+                view.bookReady = true;
                 searchResultModel.clear();
                 searchResultModel.loading = false;
 
-                const { book } = action.payload;
+                const {
+                    book
+                } = action.payload;
                 if (book && book.toc) {
                     applicationWindow().contextDrawer.model.importFromJson(JSON.stringify(book.toc));
                 } else {
@@ -399,80 +593,204 @@ Kirigami.Page {
                     backend.metadata = metadata;
                     root.bookReady(backend.metadata.title);
                 } else {
-                    view.runJavaScript('reader.view.next()');
+                    view.next();
                 }
                 break;
             case 'book-error':
                 console.error('Book error', action.payload);
                 break;
             case 'selection':
+                if (action.payload.action === 'copy') {
+                    Clipboard.saveText(action.payload.text);
+                } else if (action.payload.action === 'translate') {
+                    backend.showTranslation(i18n("Translating..."));
+                    Translator.translate(action.payload.text);
+                } else {
+                    backend.selection = action.payload;
+                }
+                break;
+            case 'selection-find':
+                searchDialog.text = action.payload.text;
+                searchResultModel.search(action.payload.text);
+                searchResultModel.loading = true;
+                searchDialog.open();
+                break;
+            case 'show-selection':
                 backend.selection = action.payload;
                 break;
             case 'relocate':
                 backend.progress = action.payload.fraction;
                 backend.location = action.payload;
+                root.currentLocation = action.payload.cfi;
                 backend.timeInChapter = Math.round(action.payload.time.section * 60);
                 backend.timeInBook = Math.round(action.payload.time.total * 60);
                 root.relocated(action.payload.cfi, action.payload.fraction * 100);
                 backend.locationsReady = true;
                 break;
             case 'find-results':
-                searchResultModel.resultFound(action.payload.q, action.payload.results);
+                searchResultModel.resultFound(action.payload.query, action.payload.results);
                 break;
             case 'external-link':
-                Qt.openUrlExternally(action.payload.href)
+                Qt.openUrlExternally(action.payload.href);
                 break;
             }
         }
 
         function applyStyle() {
+            if (!view.bookReady) {
+                return;
+            }
+
             const getIbooksInternalTheme = bgColor => {
                 const red = bgColor.r;
                 const green = bgColor.g;
                 const blue = bgColor.b;
                 const l = 0.299 * red + 0.587 * green + 0.114 * blue;
-                if (l < 0.3) return 'Night';
-                else if (l < 0.7) return 'Gray';
-                else if (red > green && green > blue) return 'Sepia';
-                else return 'White';
-            }
+                if (l < 0.3)
+                    return 'Night';
+                else if (l < 0.7)
+                    return 'Gray';
+                else if (red > green && green > blue)
+                    return 'Sepia';
+                else
+                    return 'White';
+            };
             const fontDesc = Config.defaultFont;
-            const fontFamily = fontDesc.family
-            const fontSizePt = fontDesc.pointSize
-            const fontSize = fontDesc.pixelSize
-            let fontWeight = 400
-            const fontStyle = fontDesc.styleName
+            const fontFamily = fontDesc.family;
+            const fontSizePt = fontDesc.pointSize;
+            const fontSize = fontDesc.pixelSize;
+            let fontWeight = 400;
+            const fontStyle = fontDesc.styleName;
+            const maxWidth = Config.maxWidth || 720;
+            const defaultTheme = Config.invert ? {
+                light: {
+                    fg: "#ffffff",
+                    bg: "#000000",
+                    link: "#8ab4f8"
+                },
+                dark: {
+                    fg: "#ffffff",
+                    bg: "#000000",
+                    link: "#8ab4f8"
+                },
+                inverted: {
+                    fg: "#ffffff",
+                    bg: "#000000",
+                    link: "#8ab4f8"
+                }
+            } : {
+                light: {
+                    fg: "#000000",
+                    bg: "#ffffff",
+                    link: "#0000ee"
+                },
+                dark: {
+                    fg: "#000000",
+                    bg: "#ffffff",
+                    link: "#0000ee"
+                },
+                inverted: {
+                    fg: "#ffffff",
+                    bg: "#000000",
+                    link: "#8ab4f8"
+                }
+            };
+            const kdeForegroundColor = Config.invert ? Kirigami.Theme.backgroundColor.toString() : Kirigami.Theme.textColor.toString();
+            const kdeBackgroundColor = Config.invert ? Kirigami.Theme.textColor.toString() : Kirigami.Theme.backgroundColor.toString();
+            const kdeLinkColor = Kirigami.Theme.highlightColor.toString();
+            const kdeTheme = {
+                light: {
+                    fg: kdeForegroundColor,
+                    bg: kdeBackgroundColor,
+                    link: kdeLinkColor
+                },
+                dark: {
+                    fg: kdeForegroundColor,
+                    bg: kdeBackgroundColor,
+                    link: kdeLinkColor
+                },
+                inverted: {
+                    fg: kdeForegroundColor,
+                    bg: kdeBackgroundColor,
+                    link: kdeLinkColor
+                }
+            };
+            const invertStylesheet = `
+                html, body {
+                    color: #ffffff !important;
+                    background: #000000 !important;
+                }
+                *, *::before, *::after {
+                    color: inherit !important;
+                    border-color: currentColor !important;
+                    background-color: #000000 !important;
+                }
+                a:any-link {
+                    color: #8ab4f8 !important;
+                }
+                svg, img {
+                    background-color: transparent !important;
+                    filter: invert(1) hue-rotate(180deg) !important;
+                }
+                svg.not_inverse,
+                img.not_inverse,
+                .not_inverse svg,
+                .not_inverse img {
+                    filter: none !important;
+                }
+                mjx-container,
+                mjx-container *,
+                mjx-container svg,
+                mjx-container svg * {
+                    color: #ffffff !important;
+                    background: transparent !important;
+                    background-color: transparent !important;
+                    border-color: currentColor !important;
+                    stroke: currentColor !important;
+                }
+                mjx-container svg {
+                    filter: none !important;
+                    fill: currentColor !important;
+                }
+                mjx-container svg [fill="none"] {
+                    fill: none !important;
+                }
+                mjx-container svg [stroke] {
+                    stroke: currentColor !important;
+                }
+            `;
+            const transparentStylesheet = `
+                html, body {
+                    background: transparent !important;
+                    background-color: transparent !important;
+                }
+                body * {
+                    background-color: transparent !important;
+                }
+            `;
 
             const style = {
                 layout: {
                     gap: 0.06,
-                    maxInlineSize: 720,
-                    maxBlockSize: 1440,
+                    maxInlineSize: maxWidth,
+                    maxBlockSize: maxWidth * 2,
                     maxColumnCount: 2,
-                    flow: 'paginated', // 'scrolled'
-                    animated: true,
+                    flow: 'paginated' // 'scrolled'
+                    ,
+                    animated: true
                 },
                 style: {
                     lineHeight: 1.5,
                     justify: Config.justify,
                     hyphenate: Config.hyphenate,
                     invert: Config.invert,
-                    theme: {
-                        light: {
-                            fg: Config.invert ? Kirigami.Theme.backgroundColor.toString() : Kirigami.Theme.textColor.toString(),
-                            bg: Config.invert ? Kirigami.Theme.textColor.toString() : Kirigami.Theme.backgroundColor.toString() 
-                        },
-                        dark: {
-                            fg: Config.invert ? Kirigami.Theme.backgroundColor.toString() : Kirigami.Theme.textColor.toString(),
-                            bg: Config.invert ? Kirigami.Theme.textColor.toString() : Kirigami.Theme.backgroundColor.toString()
-                        }
-                    },
+                    theme: Config.kdeTheming ? kdeTheme : defaultTheme,
                     overrideFont: !Config.usePublisherFont,
-                    userStylesheet: '',
+                    userStylesheet: Config.invert ? invertStylesheet : transparentStylesheet
                 }
-            }
+            };
 
-            view.runJavaScript(`reader.setAppearance(${JSON.stringify(style)})`)
+            view.runJavaScript(`reader.setAppearance(${JSON.stringify(style)})`);
         }
     }
 
@@ -489,5 +807,27 @@ Kirigami.Page {
     Shortcut {
         sequence: "Left"
         onActivated: view.prev()
+    }
+
+    Shortcut {
+        sequence: "SHIFT+Right"
+        onActivated: view.next()
+    }
+
+    Shortcut {
+        sequence: "SHIFT+Left"
+        onActivated: view.prev()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+R"
+        enabled: !view.loading
+        onActivated: {
+            if (backend.location && backend.location.cfi) {
+                root.currentLocation = backend.location.cfi;
+                root.reloadLocation = backend.location.cfi;
+            }
+            view.reload();
+        }
     }
 }

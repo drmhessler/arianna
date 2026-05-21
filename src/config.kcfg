@@ -39,6 +39,10 @@ SPDX-License-Identifier: CC0-1.0
       <label>Invert colors</label>
       <default>false</default>
     </entry>
+    <entry name="kdeTheming" type="bool">
+      <label>KDE Theming</label>
+      <default>true</default>
+    </entry>
     <entry name="justify" type="bool">
       <label>Justify text</label>
       <default>true</default>
@@ -50,6 +54,10 @@ SPDX-License-Identifier: CC0-1.0
     <entry name="spacing" type="double">
       <label>Line-height</label>
       <default>1.5</default>
+    </entry>
+    <entry name="fontSize" type="int">
+      <label>Font size</label>
+      <default>12</default>
     </entry>
     <entry name="brightness" type="double">
       <label>Brightness</label>
@@ -68,5 +76,24 @@ SPDX-License-Identifier: CC0-1.0
       <default>true</default>
     </entry>
   </group>
+  <group name="TranslatorEngine">
+    <entry name="translatorEngine" type="Enum">
+      <label>Translation engine</label>
+      <choices>
+        <choice name="Google" />
+        <choice name="DeepL" />
+      </choices>
+      <default>Google</default>
+    </entry>
+    <entry name="googleApiKey" type="String">
+      <label>Google Translate API key</label>
+    </entry>
+    <entry name="deeplApiKey" type="String">
+      <label>DeepL API key</label>
+    </entry>
+    <entry name="targetLanguage" type="String">
+      <label>Translation target language</label>
+      <default>DE</default>
+    </entry>
+  </group>
 </kcfg>
-

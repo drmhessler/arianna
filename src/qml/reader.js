@@ -8,9 +8,17 @@ import { searchMatcher } from './foliate-js/search.js'
 import { textWalker } from './foliate-js/text-walker.js'
 
 let backend;
+const pendingActions = []
+const dispatchPinchZoom = () =>
+    dispatch({ type: 'pinch-zoom', payload: { scale: globalThis.visualViewport.scale }})
+
 window.onload = () => {
     new QWebChannel(qt.webChannelTransport, (channel) => {
         backend = channel.objects.backend;
+        while (pendingActions.length > 0) {
+            backend.dispatch(pendingActions.shift())
+        }
+        globalThis.visualViewport.addEventListener('resize', dispatchPinchZoom)
         dispatch({ type: 'ready' })
     })
 }
@@ -19,8 +27,20 @@ const dispatch = action => {
     if (backend) {
         backend.dispatch(action)
     } else {
-        console.error('Dispatch called before backend initialization', new Error().stack)
+        pendingActions.push(action)
     }
+}
+
+let selectionAction
+globalThis.showSelection = detail => new Promise(resolve => {
+    selectionAction?.()
+    selectionAction = resolve
+    dispatch({ type: 'show-selection', payload: detail })
+})
+
+globalThis.selectionAction = action => {
+    selectionAction?.(action)
+    selectionAction = null
 }
 
 const format = {}
@@ -166,7 +186,7 @@ globalThis.openSync = function (url, initCfi) {
 }
 
 const getCSS = ({
-    lineHeight, justify, hyphenate, invert, theme, overrideFont, userStylesheet,
+    lineHeight, justify, hyphenate, invert, theme, overrideFont, userStylesheet, fontSize,
     mediaActiveClass,
 }) => [`
     @namespace epub "http://www.idpf.org/2007/ops";
@@ -200,6 +220,7 @@ const getCSS = ({
     }
     html {
         line-height: ${lineHeight};
+        font-size: ${fontSize}pt;
         hanging-punctuation: allow-end last;
         orphans: 2;
         widows: 2;
@@ -217,8 +238,30 @@ const getCSS = ({
         tab-size: 2;
     }
 `, `
+    ${invert ? `
+    @media screen {
+        html, body {
+            color: ${theme.inverted.fg} !important;
+            background: ${theme.inverted.bg} !important;
+        }
+        body * {
+            color: inherit !important;
+            border-color: currentColor !important;
+            background-color: ${theme.inverted.bg} !important;
+        }
+        a:any-link {
+            color: ${theme.inverted.link} !important;
+        }
+        svg, img {
+            background-color: transparent !important;
+        }
+        .${CSS.escape(mediaActiveClass)}, .${CSS.escape(mediaActiveClass)} * {
+            color: ${theme.inverted.fg} !important;
+            background: color-mix(in hsl, ${theme.inverted.fg}, ${theme.inverted.bg} 85%) !important;
+        }
+    }` : ''}
     @media screen and (prefers-color-scheme: light) {
-        ${theme.light.bg !== '#ffffff' ? `
+        ${!invert && theme.light.bg !== '#ffffff' ? `
         html, body {
             color: ${theme.light.fg} !important;
             background: ${theme.light.bg} !important;
@@ -583,6 +626,12 @@ class Reader {
                 case 'copy': getHTML(range).then(html =>
                     dispatch({ type: 'selection', payload: { action, text, html } }))
                     break
+                case 'find':
+                    dispatch({ type: 'selection-find', payload: { text } })
+                    break
+                case 'translate':
+                    dispatch({ type: 'selection', payload: { action, text, pos } })
+                    break
                 case 'copy-citation':
                     dispatch({ type: 'selection', payload: { action, text, value,
                         ...this.view.getProgressOf(index, range) }})
@@ -620,28 +669,26 @@ class Reader {
     }
 
     async search(query, options = {}) {
-        const matcher = searchMatcher(textWalker, {
-            defaultLocale: this.book.language,
-            matchCase: options.matchCase,
-            matchDiacritics: options.matchDiacritics,
-            matchWholeWords: options.matchWholeWords
-        });
-
         const results = [];
-        const tocMap = this.createTocMap();
 
-        for (const [index, section] of this.book.sections.entries()) {
-            const doc = await section.createDocument();
-            
-            // Get the chapter name(label) for this section from the TOC map
-            const chapterName = tocMap.get(index) || `Chapter ${index + 1}`;
-            
-            for (const result of matcher(doc, query)) {
-                const cfi = this.view.getCFI(index, result.range);
+        for await (const result of this.view.search({ query, ...options })) {
+            if (result === 'done' || result.progress) {
+                continue;
+            }
+
+            if (result.subitems) {
+                for (const item of result.subitems) {
+                    results.push({
+                        cfi: item.cfi,
+                        excerpt: item.excerpt,
+                        section: result.label
+                    });
+                }
+            } else if (result.cfi) {
                 results.push({
-                    cfi,
+                    cfi: result.cfi,
                     excerpt: result.excerpt,
-                    section: chapterName
+                    section: ''
                 });
             }
         }
@@ -706,11 +753,9 @@ class Reader {
 }
 
 globalThis.find = {
-    find: (query, inBook, highlight) => globalThis.reader.search(query)
+    find: (query, inBook, highlight) => globalThis.reader.search(query),
+    clearHighlight: () => globalThis.reader.view.clearSearch(),
 }
-
-globalThis.visualViewport.addEventListener('resize', () =>
-    dispatch({ type: 'pinch-zoom', payload: { scale: globalThis.visualViewport.scale }}))
 
 const printf = (str, args) => {
     for (const arg of args) str = str.replace('%s', arg)

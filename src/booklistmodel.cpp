@@ -87,8 +87,12 @@ public:
         }
     }
 
-    void addEntry(BookListModel *q, const BookEntry &entry)
+    bool addEntry(BookListModel *q, const BookEntry &entry)
     {
+        if (q->indexOfFile(entry.filename) != -1) {
+            return false;
+        }
+
         entries.append(entry);
         q->append(entry);
         for (int i = 0; i < entry.author.size(); i++) {
@@ -109,6 +113,8 @@ public:
         for (int i = 0; i < entry.genres.size(); i++) {
             keywordCategoryModel->addCategoryEntry(entry.genres.at(i), entry, GenreRole);
         }
+
+        return true;
     }
 
     void loadCache(BookListModel *q)
@@ -185,7 +191,7 @@ void BookListModel::contentModelItemsInserted(QModelIndex index, int first, int 
     newEntries.reserve(last - first + 1);
 
     for (int i = first; i < last + 1; ++i) {
-        QVariant filePath = d->contentModel->data(d->contentModel->index(first, 0, index), ContentList::FilePathRole);
+        QVariant filePath = d->contentModel->data(d->contentModel->index(i, 0, index), ContentList::FilePathRole);
         BookEntry entry;
         entry.filename = filePath.toUrl().toLocalFile();
         QStringList splitName = entry.filename.split(QLatin1Char('/'));
@@ -206,7 +212,7 @@ void BookListModel::contentModelItemsInserted(QModelIndex index, int first, int 
         entry.comment = data.userComment();
         entry.tags = data.tags();
 
-        QVariantHash metadata = d->contentModel->data(d->contentModel->index(first, 0, index), Qt::UserRole + 2).toHash();
+        QVariantHash metadata = d->contentModel->data(d->contentModel->index(i, 0, index), Qt::UserRole + 2).toHash();
         QVariantHash::const_iterator it = metadata.constBegin();
         for (; it != metadata.constEnd(); it++) {
             if (it.key() == QLatin1String("author")) {
@@ -261,8 +267,9 @@ void BookListModel::contentModelItemsInserted(QModelIndex index, int first, int 
 
     // Batch process the entries
     for (const BookEntry &entry : std::as_const(newEntries)) {
-        d->addEntry(this, entry);
-        BookDatabase::self().addEntry(entry);
+        if (d->addEntry(this, entry)) {
+            BookDatabase::self().addEntry(entry);
+        }
     }
 
     Q_EMIT countChanged();
@@ -323,9 +330,15 @@ void BookListModel::setBookData(const QString &fileName, const QString &property
             } else if (property == QStringLiteral("currentProgress")) {
                 entry.currentProgress = value.toInt();
                 BookDatabase::self().updateEntry(entry.filename, property, QVariant(value.toInt()));
+            } else if (property == QStringLiteral("zoomLevel")) {
+                entry.zoomLevel = value.toDouble();
+                BookDatabase::self().updateEntry(entry.filename, property, QVariant(entry.zoomLevel));
             } else if (property == QStringLiteral("locations")) {
                 entry.locations = value;
                 BookDatabase::self().updateEntry(entry.filename, property, {value});
+            } else if (property == QStringLiteral("lastOpenedTime")) {
+                entry.lastOpenedTime = QDateTime::fromString(value, Qt::ISODateWithMs);
+                BookDatabase::self().updateEntry(entry.filename, property, QVariant(entry.lastOpenedTime));
             } else if (property == QStringLiteral("rating")) {
                 entry.rating = value.toInt();
                 BookDatabase::self().updateEntry(entry.filename, property, QVariant(value.toInt()));
@@ -349,12 +362,17 @@ void BookListModel::removeBook(const QString &fileName, bool deleteFile)
         // job->start();
     }
 
-    for (const BookEntry &entry : std::as_const(d->entries)) {
-        if (entry.filename == fileName) {
-            Q_EMIT entryRemoved(entry);
-            BookDatabase::self().removeEntry(entry);
-            break;
+    for (qsizetype i = 0; i < d->entries.size(); ++i) {
+        const BookEntry entry = d->entries.at(i);
+        if (entry.filename != fileName) {
+            continue;
         }
+
+        d->entries.removeAt(i);
+        Q_EMIT entryRemoved(entry);
+        Q_EMIT countChanged();
+        BookDatabase::self().removeEntry(entry);
+        break;
     }
 }
 

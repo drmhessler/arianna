@@ -50,6 +50,14 @@ const extractFootnote = (doc, anchor) => {
     return el
 }
 
+const getReferencedElement = (doc, anchor) => {
+    const target = anchor(doc)
+    if (!target?.matches) return target
+    for (let el = target; el && el !== doc.body; el = el.parentElement)
+        if (getReferencedType(el)) return el
+    return target.matches(isInline) ? extractFootnote(doc, anchor) : target
+}
+
 export class FootnoteHandler extends EventTarget {
     detectFootnotes = true
     #showFragment(book, { index, anchor }, href) {
@@ -58,7 +66,8 @@ export class FootnoteHandler extends EventTarget {
             view.addEventListener('load', e => {
                 try {
                     const { doc } = e.detail
-                    const el = anchor(doc)
+                    const target = anchor(doc)
+                    const el = getReferencedElement(doc, anchor)
                     const type = getReferencedType(el)
                     const hidden = el?.matches?.('aside') && type === 'footnote'
                     if (el) {
@@ -71,7 +80,7 @@ export class FootnoteHandler extends EventTarget {
                         doc.body.replaceChildren()
                         doc.body.appendChild(frag)
                     }
-                    const detail = { view, href, type, hidden, target: el }
+                    const detail = { view, href, type, hidden, target }
                     this.dispatchEvent(new CustomEvent('render', { detail }))
                     resolve()
                 } catch (e) {

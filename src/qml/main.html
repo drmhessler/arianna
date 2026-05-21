@@ -20,8 +20,18 @@ html {
 body {
     margin: 0 auto;
     height: 100%;
-    background: var(--bg);
+    background:
+        linear-gradient(rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.86)),
+        url("http://127.0.0.1:45961/static/background.webp");
+    background-position: center center;
+    background-repeat: no-repeat;
+    background-size: cover;
+    background-attachment: fixed;
     color: var(--fg);
+}
+body.invert {
+    background: #000;
+    color: #fff;
 }
 @media (prefers-color-scheme: dark) {
     html {
@@ -31,10 +41,6 @@ body {
         --bg: var(--dark-bg);
         --fg: var(--dark-fg);
     }
-    .invert foliate-view::part(filter) {
-        color-scheme: light; /* required to make the iframe bg transparent */
-        filter: invert(1) hue-rotate(180deg);
-    }
 }
 foliate-view::part(head), foliate-view::part(foot) {
     font-family: system-ui;
@@ -42,6 +48,18 @@ foliate-view::part(head), foliate-view::part(foot) {
 }
 foliate-view {
     --overlayer-highlight-blend-mode: multiply;
+}
+foliate-view::part(filter) {
+    color-scheme: light;
+    background:
+        linear-gradient(rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.86)),
+        url("http://127.0.0.1:45961/static/background.webp") !important;
+    background-position: center center !important;
+    background-repeat: no-repeat !important;
+    background-size: cover !important;
+}
+body.invert foliate-view::part(filter) {
+    background: #000 !important;
 }
 @media (prefers-color-scheme: dark) {
     foliate-view {
@@ -115,7 +133,13 @@ foliate-view {
     background: var(--active);
 }
 #footnote-dialog main {
+    flex: 1;
     min-height: 0;
+}
+#footnote-dialog foliate-view {
+    display: block;
+    width: 100%;
+    height: 100%;
 }
 @media (max-width: 500px) {
     #footnote-dialog {

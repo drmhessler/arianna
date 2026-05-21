@@ -6,6 +6,7 @@ import QtQuick.Controls as QQC2
 import QtWebEngine
 import QtWebChannel
 import QtQuick.Layouts
+import org.kde.kitemmodels as KItemModels
 import org.kde.kirigami as Kirigami
 import org.kde.kirigamiaddons.components as Components
 import org.kde.quickcharts as Charts
@@ -15,8 +16,51 @@ Kirigami.ScrollablePage {
     id: root
 
     property CategoryEntriesModel bookListModel
+    property var addBookAction
 
     title: i18n("Library")
+    actions: [
+        Kirigami.Action {
+            text: i18nc("@action:button", "Sort")
+            icon.name: "view-sort"
+            Kirigami.Action {
+                text: i18nc("@action:inmenu Sort books by title", "Title")
+                checkable: true
+                checked: sortProxy.sortRoleName === "title"
+                onTriggered: {
+                    sortProxy.sortRoleName = "title";
+                    sortProxy.sortOrder = Qt.AscendingOrder;
+                }
+            }
+            Kirigami.Action {
+                text: i18nc("@action:inmenu Sort books by last access", "Last Access")
+                checkable: true
+                checked: sortProxy.sortRoleName === "lastOpenedTime"
+                onTriggered: {
+                    sortProxy.sortRoleName = "lastOpenedTime";
+                    sortProxy.sortOrder = Qt.DescendingOrder;
+                }
+            }
+        },
+        Kirigami.Action {
+            id: addBookActionProxy
+
+            text: root.addBookAction ? root.addBookAction.text : ""
+            icon.name: root.addBookAction ? root.addBookAction.icon.name : ""
+            enabled: root.addBookAction ? root.addBookAction.enabled : false
+            onTriggered: if (root.addBookAction) {
+                root.addBookAction.trigger();
+            }
+        }
+    ]
+
+    KItemModels.KSortFilterProxyModel {
+        id: sortProxy
+        sourceModel: root.bookListModel
+        sortRoleName: "lastOpenedTime"
+        sortOrder: Qt.DescendingOrder
+        dynamicSortFilter: true
+    }
 
     GridView {
         id: contentDirectoryView
@@ -26,7 +70,7 @@ Kirigami.ScrollablePage {
         topMargin: Kirigami.Units.smallSpacing
         bottomMargin: Kirigami.Units.smallSpacing
 
-        model: root.bookListModel
+        model: sortProxy
 
         cellWidth: {
             const viewWidth = contentDirectoryView.width - Kirigami.Units.smallSpacing * 2;
@@ -72,6 +116,7 @@ Kirigami.ScrollablePage {
 
             mainText: bookDelegate.title
             secondaryText: author ? bookDelegate.author.join(', ') : ''
+            shrinkCoverOnHover: categoryEntriesModel === ""
 
             onClicked: if (categoryEntriesModel) {
                 Navigation.openLibrary(title, categoryEntriesModel, false);
@@ -79,10 +124,61 @@ Kirigami.ScrollablePage {
                 Navigation.openBook(filename, locations, currentLocation, entry);
             }
 
+            RowLayout {
+                anchors {
+                    top: parent.top
+                    right: parent.right
+                    margins: Kirigami.Units.largeSpacing
+                }
+                z: 1
+                spacing: Kirigami.Units.smallSpacing
+                visible: !Kirigami.Settings.isMobile && bookDelegate.hovered && bookDelegate.categoryEntriesModel === ""
+
+                QQC2.ToolButton {
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 2
+                    Layout.preferredHeight: Kirigami.Units.gridUnit * 2
+                    display: QQC2.AbstractButton.IconOnly
+                    icon.name: "documentinfo-symbolic"
+                    text: i18nc("@action:button", "Book Details")
+                    QQC2.ToolTip.text: text
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                    onClicked: applicationWindow().pageStack.pushDialogLayer(Qt.resolvedUrl("./BookDetailsPage.qml"), {
+                        metadata: bookDelegate.entry
+                    })
+                }
+
+                QQC2.ToolButton {
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 2
+                    Layout.preferredHeight: Kirigami.Units.gridUnit * 2
+                    display: QQC2.AbstractButton.IconOnly
+                    icon.name: "document-edit"
+                    text: i18nc("@action:button", "Edit Book")
+                    QQC2.ToolTip.text: text
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                    onClicked: EditorProcess.start('/usr/local/bin/ebook-edit-check', [bookDelegate.filename])
+                }
+
+                QQC2.ToolButton {
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 2
+                    Layout.preferredHeight: Kirigami.Units.gridUnit * 2
+                    display: QQC2.AbstractButton.IconOnly
+                    icon.name: "edit-delete-remove"
+                    text: i18nc("@action:button", "Remove from Library")
+                    QQC2.ToolTip.text: text
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                    onClicked: applicationWindow().bookListModel.removeBook(bookDelegate.filename)
+                }
+            }
+
             TapHandler {
                 acceptedButtons: Qt.RightButton
                 onTapped: {
                     menu.entry = bookDelegate.entry;
+                    menu.filename = bookDelegate.filename;
+                    menu.isBook = bookDelegate.categoryEntriesModel === "";
                     menu.popup();
                 }
             }
@@ -92,6 +188,8 @@ Kirigami.ScrollablePage {
             id: menu
 
             property var entry: null
+            property string filename: ""
+            property bool isBook: false
 
             QQC2.Action {
                 icon.name: 'documentinfo-symbolic'
@@ -99,6 +197,20 @@ Kirigami.ScrollablePage {
                 onTriggered: applicationWindow().pageStack.pushDialogLayer(Qt.resolvedUrl("./BookDetailsPage.qml"), {
                     metadata: menu.entry,
                 })
+            }
+
+            QQC2.Action {
+                icon.name: 'document-edit'
+                text: i18nc("@action:inmenu", "Edit Book")
+                enabled: menu.isBook
+                onTriggered: EditorProcess.start('/usr/local/bin/ebook-edit-check', [menu.filename])
+            }
+
+            QQC2.Action {
+                icon.name: 'edit-delete-remove'
+                text: i18nc("@action:inmenu", "Remove from Library")
+                enabled: menu.isBook
+                onTriggered: applicationWindow().bookListModel.removeBook(menu.filename)
             }
         }
 
@@ -108,7 +220,7 @@ Kirigami.ScrollablePage {
             visible: contentDirectoryView.count === 0
             icon.name: "application-epub+zip"
             text: i18nc("@info placeholder", "Add some books")
-            helpfulAction: root.actions[0]
+            helpfulAction: addBookActionProxy
         }
     }
 }

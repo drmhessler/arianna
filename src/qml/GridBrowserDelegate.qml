@@ -25,6 +25,7 @@ Delegates.RoundedItemDelegate {
     required property string mainText
     required property string secondaryText
     required property int currentProgress
+    property bool shrinkCoverOnHover: false
 
     SystemPalette {
         id: myPalette
@@ -58,14 +59,18 @@ Delegates.RoundedItemDelegate {
 
     contentItem: ColumnLayout {
         Item {
+            id: coverArea
+
+            readonly property real baseCoverMargin: Kirigami.Settings.isMobile ? 0 : Kirigami.Units.largeSpacing
+            readonly property real hoverCoverMargin: gridEntry.shrinkCoverOnHover && gridEntry.hovered ? Kirigami.Units.gridUnit * 2 : 0
+
             Layout.fillWidth: true
             Layout.preferredHeight: gridEntry.width - 2 * Kirigami.Units.largeSpacing
 
             Image {
                 id: coverImage
 
-                width: gridEntry.width - 2 * Kirigami.Units.largeSpacing
-                height: gridEntry.width - 2 * Kirigami.Units.largeSpacing
+                height: width
 
                 fillMode: Image.PreserveAspectFit
                 source: gridEntry.imageUrl != 'file://' ? gridEntry.imageUrl : ''
@@ -80,7 +85,23 @@ Delegates.RoundedItemDelegate {
                     top: parent.top
                     left: parent.left
                     right: parent.right
-                    margins: Kirigami.Settings.isMobile ? 0 : Kirigami.Units.largeSpacing
+                    topMargin: coverArea.baseCoverMargin + coverArea.hoverCoverMargin
+                    leftMargin: coverArea.baseCoverMargin
+                    rightMargin: coverArea.baseCoverMargin + coverArea.hoverCoverMargin
+                }
+
+                Behavior on anchors.topMargin {
+                    NumberAnimation {
+                        duration: Kirigami.Units.longDuration
+                        easing.type: Easing.OutCubic
+                    }
+                }
+
+                Behavior on anchors.rightMargin {
+                    NumberAnimation {
+                        duration: Kirigami.Units.longDuration
+                        easing.type: Easing.OutCubic
+                    }
                 }
             }
 

@@ -11,13 +11,275 @@
 #include <QDebug>
 #include <QDir>
 #include <QDomDocument>
+#include <QFile>
+#include <QFileInfo>
 #include <QImage>
 #include <QImageReader>
+#include <QRegularExpression>
 #include <QScopedPointer>
+
+#include <KZip>
+#include <QBuffer>
+#include <QMimeDatabase>
 
 #define METADATA_FOLDER QStringLiteral("META-INF")
 #define MIMETYPE_FILE QStringLiteral("mimetype")
 #define CONTAINER_FILE QStringLiteral("META-INF/container.xml")
+
+static QString escapeXmlAttribute(const QString &value)
+{
+    QString escaped = value;
+    escaped.replace(QStringLiteral("&"), QStringLiteral("&amp;"));
+    escaped.replace(QStringLiteral("\""), QStringLiteral("&quot;"));
+    escaped.replace(QStringLiteral("<"), QStringLiteral("&lt;"));
+    escaped.replace(QStringLiteral(">"), QStringLiteral("&gt;"));
+    return escaped;
+}
+static QString appendProperty(const QString &properties, const QString &property)
+{
+    QStringList parts = properties.split(u' ', Qt::SkipEmptyParts);
+
+    if (!parts.contains(property)) {
+        parts.append(property);
+    }
+
+    return parts.join(u' ');
+}
+
+static bool isXmlLikeFile(const QString &path)
+{
+    const QString lower = path.toLower();
+
+    return lower.endsWith(QStringLiteral(".xhtml")) || lower.endsWith(QStringLiteral(".html")) || lower.endsWith(QStringLiteral(".htm"))
+        || lower.endsWith(QStringLiteral(".svg")) || lower.endsWith(QStringLiteral(".smil"));
+}
+
+static bool isRemoteResourceHostMime(const QString &mediaType)
+{
+    return mediaType == QStringLiteral("application/xhtml+xml") || mediaType == QStringLiteral("image/svg+xml")
+        || mediaType == QStringLiteral("application/smil+xml");
+}
+
+static bool isCssFile(const QString &path)
+{
+    return path.toLower().endsWith(QStringLiteral(".css"));
+}
+
+static QString resolveRelativePath(const QString &basePath, const QString &relativePath)
+{
+    if (relativePath.startsWith(QStringLiteral("http://")) || relativePath.startsWith(QStringLiteral("https://"))
+        || relativePath.startsWith(QStringLiteral("data:")) || relativePath.startsWith(QStringLiteral("blob:"))
+        || relativePath.startsWith(QStringLiteral("#"))) {
+        return relativePath;
+    }
+
+    const QString cleanRelative = relativePath.section(u'#', 0, 0);
+    const QString baseDir = QFileInfo(basePath).path();
+
+    return QDir::cleanPath(baseDir + QStringLiteral("/") + cleanRelative);
+}
+
+static QByteArray rewriteCssResourceLinks(const QByteArray &data, const QString &currentPath, const ResourceMap &resourceMap)
+{
+    QString text = QString::fromUtf8(data);
+
+    static const QRegularExpression urlRegex(QStringLiteral(R"###(url\(\s*['"]?([^'")]+)['"]?\s*\))###"));
+
+    QRegularExpressionMatchIterator it = urlRegex.globalMatch(text);
+
+    QList<QPair<QString, QString>> replacements;
+
+    while (it.hasNext()) {
+        const auto match = it.next();
+
+        const QString original = match.captured(0);
+
+        const QString value = match.captured(1);
+
+        if (value.startsWith(QStringLiteral("http://")) || value.startsWith(QStringLiteral("https://")) || value.startsWith(QStringLiteral("data:"))
+            || value.startsWith(QStringLiteral("blob:")) || value.startsWith(QStringLiteral("#"))) {
+            continue;
+        }
+
+        const QString resolved = resolveRelativePath(currentPath, value);
+
+        if (!resourceMap.contains(resolved)) {
+            continue;
+        }
+
+        const QString rewritten = QStringLiteral("url(\"") + resourceMap.value(resolved) + QStringLiteral("\")");
+
+        replacements.append({original, rewritten});
+
+        qDebug() << "Rewriting CSS resource:" << value << "->" << resourceMap.value(resolved);
+    }
+
+    for (const auto &[from, to] : replacements) {
+        text.replace(from, to);
+    }
+
+    return text.toUtf8();
+}
+
+static QByteArray rewriteXmlResourceLinks(const QByteArray &data, const QString &currentPath, const ResourceMap &resourceMap)
+{
+    QString text = QString::fromUtf8(data);
+
+    static const QRegularExpression attrRegex(QStringLiteral(R"###((src|href|poster)=["']([^"']+)["'])###"));
+
+    QRegularExpressionMatchIterator it = attrRegex.globalMatch(text);
+
+    QList<QPair<QString, QString>> replacements;
+
+    while (it.hasNext()) {
+        const auto match = it.next();
+
+        const QString original = match.captured(0);
+
+        const QString attr = match.captured(1);
+
+        const QString value = match.captured(2);
+
+        if (value.startsWith(QStringLiteral("http://")) || value.startsWith(QStringLiteral("https://")) || value.startsWith(QStringLiteral("data:"))
+            || value.startsWith(QStringLiteral("blob:")) || value.startsWith(QStringLiteral("#"))) {
+            continue;
+        }
+
+        const QString resolved = resolveRelativePath(currentPath, value);
+
+        if (!resourceMap.contains(resolved)) {
+            continue;
+        }
+
+        const QString rewritten = attr + QStringLiteral("=\"") + escapeXmlAttribute(resourceMap.value(resolved)) + QStringLiteral("\"");
+
+        replacements.append({original, rewritten});
+
+        qDebug() << "Rewriting XML resource:" << value << "->" << resourceMap.value(resolved);
+    }
+
+    for (const auto &[from, to] : replacements) {
+        text.replace(from, to);
+    }
+
+    return text.toUtf8();
+}
+
+static QByteArray rewriteOpfManifestLinks(const QByteArray &data, const QString &opfPath, const ResourceMap &resourceMap)
+{
+    QDomDocument doc;
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    if (!doc.setContent(data, QDomDocument::ParseOption::UseNamespaceProcessing)) {
+        return data;
+    }
+#else
+    if (!doc.setContent(data, true)) {
+        return data;
+    }
+#endif
+
+    QDomNodeList manifestNodes = doc.elementsByTagName(QStringLiteral("manifest"));
+    if (manifestNodes.isEmpty()) {
+        return data;
+    }
+
+    QDomElement manifest = manifestNodes.at(0).toElement();
+    QDomNodeList itemNodes = manifest.elementsByTagName(QStringLiteral("item"));
+
+    for (int i = 0; i < itemNodes.count(); ++i) {
+        QDomElement item = itemNodes.at(i).toElement();
+
+        const QString href = item.attribute(QStringLiteral("href"));
+        const QString mediaType = item.attribute(QStringLiteral("media-type"));
+
+        if (href.isEmpty()) {
+            continue;
+        }
+
+        const QString resolved = QDir::cleanPath(resolveRelativePath(opfPath, href));
+
+        // 1. Manifest-Ressource selbst auf Server-URL umbiegen
+        if (resourceMap.contains(resolved)) {
+            item.setAttribute(QStringLiteral("href"), resourceMap.value(resolved));
+
+            qDebug() << "Rewriting OPF manifest resource:" << resolved << "->" << resourceMap.value(resolved);
+        }
+
+        // 2. Content-Dokumente als Host von Remote Resources markieren
+        if (isRemoteResourceHostMime(mediaType)) {
+            const QString oldProperties = item.attribute(QStringLiteral("properties"));
+
+            item.setAttribute(QStringLiteral("properties"), appendProperty(oldProperties, QStringLiteral("remote-resources")));
+        }
+    }
+
+    return doc.toByteArray();
+}
+
+static void copyDirectoryServerReady(KZip &outZip, const KArchiveDirectory *dir, const QString &prefix, const ResourceMap &resourceMap)
+{
+    if (!dir) {
+        return;
+    }
+
+    const QStringList entries = dir->entries();
+
+    for (const QString &entryName : entries) {
+        const KArchiveEntry *entry = dir->entry(entryName);
+        if (!entry) {
+            continue;
+        }
+
+        const QString fullPath = prefix.isEmpty() ? entryName : prefix + QStringLiteral("/") + entryName;
+
+        const QString cleanPath = QDir::cleanPath(fullPath);
+
+        if (cleanPath == QStringLiteral("mimetype")) {
+            continue;
+        }
+
+        if (entry->isDirectory()) {
+            const auto *subdir = dynamic_cast<const KArchiveDirectory *>(entry);
+
+            if (subdir) {
+                copyDirectoryServerReady(outZip, subdir, cleanPath, resourceMap);
+            }
+
+            continue;
+        }
+
+        const auto *file = dynamic_cast<const KArchiveFile *>(entry);
+
+        if (!file) {
+            continue;
+        }
+
+        // Diese Dateien werden jetzt vom BookServer geliefert.
+        if (resourceMap.contains(cleanPath)) {
+            continue;
+        }
+
+        QScopedPointer<QIODevice> dev(file->createDevice());
+        if (!dev) {
+            continue;
+        }
+
+        QByteArray data = dev->readAll();
+
+        const QString lower = cleanPath.toLower();
+
+        if (lower.endsWith(QStringLiteral(".opf"))) {
+            data = rewriteOpfManifestLinks(data, cleanPath, resourceMap);
+        } else if (isXmlLikeFile(cleanPath)) {
+            data = rewriteXmlResourceLinks(data, cleanPath, resourceMap);
+        } else if (isCssFile(cleanPath)) {
+            data = rewriteCssResourceLinks(data, cleanPath, resourceMap);
+        }
+
+        outZip.writeFile(cleanPath, data);
+    }
+}
 
 EPubContainer::EPubContainer(QObject *parent)
     : QObject(parent)
@@ -29,6 +291,7 @@ EPubContainer::~EPubContainer() = default;
 
 bool EPubContainer::openFile(const QString &path)
 {
+    m_filename = path;
     m_archive = std::make_unique<KZip>(path);
 
     if (!m_archive->open(QIODevice::ReadOnly)) {
@@ -52,6 +315,50 @@ bool EPubContainer::openFile(const QString &path)
     }
 
     return true;
+}
+
+const KArchiveDirectory *EPubContainer::rootDirectory() const
+{
+    return m_rootFolder;
+}
+
+const QHash<QString, EpubItem> &EPubContainer::manifestItems() const
+{
+    return m_items;
+}
+
+QByteArray EPubContainer::createServerReadyEpub(const ResourceMap &resourceMap) const
+{
+    if (!m_rootFolder) {
+        qWarning() << "No EPUB root folder available";
+        return {};
+    }
+
+    QByteArray result;
+    QBuffer buffer(&result);
+
+    if (!buffer.open(QIODevice::WriteOnly)) {
+        qWarning() << "Unable to open output buffer";
+        return {};
+    }
+
+    KZip outZip(&buffer);
+
+    if (!outZip.open(QIODevice::WriteOnly)) {
+        qWarning() << "Unable to create server-ready EPUB";
+        return {};
+    }
+
+    outZip.writeFile(QStringLiteral("mimetype"), QByteArrayLiteral("application/epub+zip"));
+
+    copyDirectoryServerReady(outZip, m_rootFolder, QString(), resourceMap);
+
+    outZip.close();
+    buffer.close();
+
+    qDebug() << "Created server-ready EPUB with" << resourceMap.size() << "externalized resources";
+
+    return result;
 }
 
 QSharedPointer<QIODevice> EPubContainer::ioDevice(const QString &path)
@@ -87,6 +394,15 @@ QImage EPubContainer::image(const QString &id)
     }
 
     return QImage::fromData(device->readAll());
+}
+
+QByteArray EPubContainer::readData(const QString &path)
+{
+    auto device = ioDevice(path);
+    if (!device) {
+        return {};
+    }
+    return device->readAll();
 }
 
 QStringList EPubContainer::metadata(const QStringView &key)
@@ -338,6 +654,7 @@ bool EPubContainer::parseManifestItem(const QDomNode &manifestNode, const QStrin
     QString id = manifestElement.attribute(QStringLiteral("id"));
     QString path = manifestElement.attribute(QStringLiteral("href"));
     QString type = manifestElement.attribute(QStringLiteral("media-type"));
+    const QStringList properties = manifestElement.attribute(QStringLiteral("properties")).split(u' ', Qt::SkipEmptyParts);
 
     if (id.isEmpty() || path.isEmpty()) {
         qWarning() << "Invalid item at line" << manifestElement.lineNumber();
@@ -351,6 +668,10 @@ bool EPubContainer::parseManifestItem(const QDomNode &manifestNode, const QStrin
     item.mimetype = type.toUtf8();
     item.path = path;
     m_items[id] = item;
+
+    if (properties.contains(QStringLiteral("cover-image")) && m_metadata.value(QStringLiteral("cover")).isEmpty()) {
+        m_metadata[QStringLiteral("cover")] = QStringList{id};
+    }
 
     static QSet<QString> documentTypes(
         {QStringLiteral("text/x-oeb1-document"), QStringLiteral("application/x-dtbook+xml"), QStringLiteral("application/xhtml+xml")});

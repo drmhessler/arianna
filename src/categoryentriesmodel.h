@@ -30,6 +30,7 @@ struct BookEntry {
     Q_PROPERTY(QDateTime lastOpenedTime MEMBER lastOpenedTime CONSTANT)
     Q_PROPERTY(QString currentLocation MEMBER currentLocation CONSTANT)
     Q_PROPERTY(int currentProgress MEMBER currentProgress CONSTANT)
+    Q_PROPERTY(double zoomLevel MEMBER zoomLevel CONSTANT)
     Q_PROPERTY(QString thumbnail MEMBER thumbnail CONSTANT)
     Q_PROPERTY(QStringList description MEMBER description CONSTANT)
     Q_PROPERTY(QString comment MEMBER comment CONSTANT)
@@ -63,6 +64,7 @@ public:
     QDateTime lastOpenedTime;
     QString currentLocation;
     int currentProgress = 0;
+    double zoomLevel = 1.0;
     QString thumbnail;
     QStringList description;
     QString comment;
@@ -120,6 +122,7 @@ public:
         LastOpenedTimeRole, /// For getting the last time the book was opened as a QDateTime.
         CurrentLocationRole, /// For getting the current page as an epubjs location.
         CurrentProgressRole, /// For getting the current progress as an int (percentage).
+        ZoomLevelRole, /// For getting the WebEngine zoom level.
         CategoryEntriesModelRole, /// For getting the model of this category.
         CategoryEntryCountRole, /// For getting the an int with the number of books within this category.
         ThumbnailRole, /// For getting a thumbnail url for this book.

@@ -73,6 +73,20 @@ FormCard.FormCardPage {
             onClicked: fontDialog.open()
         }
 
+        FormCard.FormDelegateSeparator {}
+
+        FormCard.FormSpinBoxDelegate {
+            label: i18n("Font size:")
+
+            from: 8
+            to: 72
+            value: Config.fontSize
+            onValueChanged: {
+                Config.fontSize = value;
+                Config.save();
+            }
+        }
+
         FormCard.FormSwitchDelegate {
             text: i18n("Use publisher font")
 
@@ -156,6 +170,7 @@ FormCard.FormCardPage {
 
     FormCard.FormCard {
         FormCard.FormSwitchDelegate {
+            id: invertColors
             text: i18n("Invert colors")
 
             checked: Config.invert
@@ -167,7 +182,80 @@ FormCard.FormCardPage {
 
         FormCard.FormDelegateSeparator {}
 
+        FormCard.FormSwitchDelegate {
+            id: kdeTheming
+            text: i18n("KDE Theming")
+
+            checked: Config.kdeTheming
+            onCheckedChanged: {
+                Config.kdeTheming = checked
+                Config.save();
+            }
+        }
+
+        FormCard.FormDelegateSeparator {}
+
         ColorSchemeDelegate {}
+    }
+
+    FormCard.FormHeader {
+        title: i18n("Translation")
+    }
+
+    FormCard.FormCard {
+        FormCard.FormComboBoxDelegate {
+            text: i18n("Translator")
+            textRole: "display"
+            valueRole: "value"
+            model: [
+                { display: i18n("Google Translate"), value: 0 },
+                { display: i18n("DeepL"), value: 1 }
+            ]
+            currentIndex: Config.translatorEngine
+            onActivated: index => {
+                Config.translatorEngine = model[index].value;
+                Config.save();
+            }
+        }
+
+        FormCard.FormDelegateSeparator {}
+
+        FormCard.FormTextFieldDelegate {
+            label: i18n("Target language")
+            text: Config.targetLanguage
+            placeholderText: i18n("DE")
+            inputMethodHints: Qt.ImhUppercaseOnly | Qt.ImhNoPredictiveText
+            onEditingFinished: {
+                Config.targetLanguage = text.trim() || "DE";
+                text = Config.targetLanguage;
+                Config.save();
+            }
+        }
+
+        FormCard.FormDelegateSeparator {}
+
+        FormCard.FormPasswordFieldDelegate {
+            label: i18n("Google API key")
+            text: Config.googleApiKey
+            placeholderText: i18n("Optional")
+            onEditingFinished: {
+                Config.googleApiKey = text.trim();
+                Config.save();
+            }
+        }
+
+        FormCard.FormDelegateSeparator {}
+
+        FormCard.FormPasswordFieldDelegate {
+            label: i18n("DeepL API key")
+            text: Config.deeplApiKey
+            enabled: Config.translatorEngine === 1
+            placeholderText: i18n("Required for DeepL")
+            onEditingFinished: {
+                Config.deeplApiKey = text.trim();
+                Config.save();
+            }
+        }
     }
 
     FormCard.FormCard {

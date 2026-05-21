@@ -15,8 +15,6 @@
 
 #include <arianna_debug.h>
 
-using namespace Qt::StringLiterals;
-
 class BookDatabase::Private
 {
 public:
@@ -36,6 +34,21 @@ public:
     QString dbfile;
     QStringList fieldNames;
 
+    void ensureColumn(const QString &name, const QString &definition)
+    {
+        if (fieldNames.contains(name)) {
+            return;
+        }
+
+        QSqlQuery alterQuery;
+        if (!alterQuery.exec(QStringLiteral("ALTER TABLE books ADD COLUMN %1").arg(definition))) {
+            qCDebug(ARIANNA_LOG) << "Unable to add database column" << name << alterQuery.lastError();
+            return;
+        }
+
+        fieldNames.append(name);
+    }
+
     bool prepareDb()
     {
         if (!db.open()) {
@@ -52,6 +65,7 @@ public:
                 }
                 qCDebug(ARIANNA_LOG) << Q_FUNC_INFO << ": opening database with following fieldNames:" << fieldNames;
             }
+            ensureColumn(QStringLiteral("zoomLevel"), QStringLiteral("zoomLevel real default 1.0"));
             return true;
         }
 
@@ -79,6 +93,7 @@ public:
                    << QStringLiteral("locations text")
                    << QStringLiteral("currentLocation varchar")
                    << QStringLiteral("currentProgress int")
+                   << QStringLiteral("zoomLevel real default 1.0")
                    << QStringLiteral("rights varchar")
                    << QStringLiteral("source varchar")
                    << QStringLiteral("identifier varchar")
@@ -116,6 +131,10 @@ public:
         entry.lastOpenedTime = query.value(fieldNames.indexOf(QStringLiteral("lastOpenedTime"))).toDateTime();
         entry.currentLocation = query.value(fieldNames.indexOf(QStringLiteral("currentLocation"))).toString();
         entry.currentProgress = query.value(fieldNames.indexOf(QStringLiteral("currentProgress"))).toInt();
+        entry.zoomLevel = query.value(fieldNames.indexOf(QStringLiteral("zoomLevel"))).toDouble();
+        if (entry.zoomLevel <= 0.0) {
+            entry.zoomLevel = 1.0;
+        }
         entry.thumbnail = query.value(fieldNames.indexOf(QStringLiteral("thumbnail"))).toString();
         entry.description = query.value(fieldNames.indexOf(QStringLiteral("description"))).toString().split(QLatin1Char('\n'), Qt::SkipEmptyParts);
         entry.comment = query.value(fieldNames.indexOf(QStringLiteral("comment"))).toString();
@@ -168,8 +187,21 @@ std::optional<BookEntry> BookDatabase::loadEntry(const QString &fileName)
     QSqlQuery entry;
     entry.prepare(QStringLiteral("SELECT ") + d->fieldNames.join(QStringLiteral(", ")) + QStringLiteral(" FROM books WHERE fileName = :fileName LIMIT 1"));
     entry.bindValue(QStringLiteral(":fileName"), fileName);
-    if (entry.exec()) {
-        entry.first();
+    if (entry.exec() && entry.first()) {
+        return d->fromSqlQuery(entry);
+    }
+    return std::nullopt;
+}
+
+std::optional<BookEntry> BookDatabase::loadEntryByIdentifier(const QString &identifier)
+{
+    if (!d->prepareDb()) {
+        return std::nullopt;
+    }
+    QSqlQuery entry;
+    entry.prepare(QStringLiteral("SELECT ") + d->fieldNames.join(QStringLiteral(", ")) + QStringLiteral(" FROM books WHERE identifier = :identifier LIMIT 1"));
+    entry.bindValue(QStringLiteral(":identifier"), identifier);
+    if (entry.exec() && entry.first()) {
         return d->fromSqlQuery(entry);
     }
     return std::nullopt;
@@ -180,6 +212,13 @@ void BookDatabase::addEntry(const BookEntry &entry)
     if (!d->prepareDb()) {
         return;
     }
+    QSqlQuery existingEntry;
+    existingEntry.prepare(QStringLiteral("SELECT 1 FROM books WHERE fileName = :fileName LIMIT 1"));
+    existingEntry.bindValue(QStringLiteral(":fileName"), entry.filename);
+    if (existingEntry.exec() && existingEntry.first()) {
+        return;
+    }
+
     qCDebug(ARIANNA_LOG) << "Adding newly discovered book to the database" << entry.filename;
 
     QStringList valueNames;
@@ -200,6 +239,7 @@ void BookDatabase::addEntry(const BookEntry &entry)
     newEntry.bindValue(QStringLiteral(":lastOpenedTime"), entry.lastOpenedTime);
     newEntry.bindValue(QStringLiteral(":currentLocation"), entry.currentLocation);
     newEntry.bindValue(QStringLiteral(":currentProgress"), entry.currentProgress);
+    newEntry.bindValue(QStringLiteral(":zoomLevel"), entry.zoomLevel);
     newEntry.bindValue(QStringLiteral(":thumbnail"), entry.thumbnail);
     newEntry.bindValue(QStringLiteral(":description"), entry.description.join(QLatin1Char('\n')));
     newEntry.bindValue(QStringLiteral(":comment"), entry.comment);
@@ -246,12 +286,12 @@ void BookDatabase::updateEntry(const QString &fileName, const QString &property,
     }
 
     const QStringList stringListValues{
-        u"series"_s,
-        u"author"_s,
-        u"character"_s
-        u"genres"_s,
-        u"keywords"_s,
-        u"tags"_s,
+        QStringLiteral("series"),
+        QStringLiteral("author"),
+        QStringLiteral("character"),
+        QStringLiteral("genres"),
+        QStringLiteral("keywords"),
+        QStringLiteral("tags"),
     };
 
     QString val;

@@ -86,5 +86,16 @@ FormCard.FormCardPage {
             description: root.metadata.rights
             visible: description.length > 0
         }
+
+        FormCard.FormDelegateSeparator {
+            visible: copyrightField.visible && locationField.visible
+        }
+
+        FormCard.FormTextDelegate {
+            id: locationField
+            text: i18n("Location:")
+            description: root.metadata.filename
+            visible: description.length > 0
+        }
     }
 }

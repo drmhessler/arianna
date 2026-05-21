@@ -294,6 +294,7 @@ void ContentList::Private::replace(QueryListProperty *property, qsizetype index,
 void ContentList::addFiles(const QList<QUrl> &filePaths)
 {
     if (d->manualContentLister) {
+        d->manualContentLister->startSearch(d->queries);
         d->manualContentLister->addFiles(filePaths);
     }
 }

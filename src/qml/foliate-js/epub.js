@@ -705,7 +705,7 @@ class Loader {
     #cache = new Map()
     #children = new Map()
     #refCount = new Map()
-    allowScript = false
+    allowScript = true
     eventTarget = new EventTarget()
     constructor({ loadText, loadBlob, resources }) {
         this.loadText = loadText

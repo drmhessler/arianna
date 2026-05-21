@@ -376,7 +376,7 @@ export class View extends HTMLElement {
                     return
                 }
                 const range = doc ? anchor(doc) : anchor
-                overlayer.add(value, range, Overlayer.outline)
+                overlayer.add(value, range, Overlayer.outline, { color: 'red' })
             }
             return
         }
@@ -513,6 +513,12 @@ export class View extends HTMLElement {
     }
     async next(distance) {
         await this.renderer.next(distance)
+    }
+    async nextSection() {
+        await this.renderer.nextSection()
+    }
+    async prevSection() {
+        await this.renderer.prevSection()
     }
     goLeft() {
         return this.book.dir === 'rtl' ? this.next() : this.prev()

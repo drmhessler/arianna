@@ -14,7 +14,7 @@ import org.kde.config as KConfig
 Kirigami.ApplicationWindow {
     id: root
 
-    property bool isLoading: true;
+    property bool isLoading: true
 
     title: i18n("Arianna")
 
@@ -32,7 +32,7 @@ Kirigami.ApplicationWindow {
         }
         initialPage: LibraryPage {
             bookListModel: root.bookListModel
-            actions: addBookAction
+            addBookAction: addBookAction
         }
     }
 
@@ -55,7 +55,7 @@ Kirigami.ApplicationWindow {
                 return;
             }
             contentModel.setKnownFiles(knownBookFiles());
-            contentModel.startSearch()
+            contentModel.startSearch();
         }
     }
 
@@ -107,7 +107,7 @@ Kirigami.ApplicationWindow {
                         }
                         acceptedButtons: Qt.RightButton | Qt.LeftButton
                     }
-                    Keys.onPressed: (event) => {
+                    Keys.onPressed: event => {
                         if (event.key !== Qt.Key_Tab || event.key !== Qt.Key_Backtab) {
                             searchDialog.open();
                             searchDialog.text = text;
@@ -122,7 +122,7 @@ Kirigami.ApplicationWindow {
                     parent: QQC2.Overlay.overlay
 
                     onTextChanged: {
-                        searchFilterProxyModel.setFilterFixedString(text)
+                        searchFilterProxyModel.setFilterFixedString(text);
                     }
 
                     model: KItemModels.KSortFilterProxyModel {
@@ -182,47 +182,33 @@ Kirigami.ApplicationWindow {
                 contentWidth: availableWidth
                 topPadding: Kirigami.Units.smallSpacing / 2
 
-                component PlaceItem : Delegates.RoundedItemDelegate {
-                    id: item
-                    signal triggered;
-                    checkable: true
-                    Layout.fillWidth: true
-                    Keys.onDownPressed: nextItemInFocusChain().forceActiveFocus(Qt.TabFocusReason)
-                    Keys.onUpPressed: nextItemInFocusChain(false).forceActiveFocus(Qt.TabFocusReason)
-                    Accessible.role: Accessible.MenuItem
-                    highlighted: checked || activeFocus
-                    onToggled: if (checked) {
-                        item.triggered();
-                    }
-                }
-
                 ColumnLayout {
                     spacing: 0
                     width: scrollView.width
                     PlaceItem {
                         id: goHomeButton
-                        text: i18nc("Switch to the listing page showing the most recently read books", "Home");
-                        icon.name: "go-home";
+                        text: i18nc("Switch to the listing page showing the most recently read books", "Home")
+                        icon.name: "go-home"
                         checked: true
                         QQC2.ButtonGroup.group: placeGroup
                         onTriggered: Navigation.openLibrary(i18n("Home"), bookListModel, true)
                     }
                     PlaceItem {
-                        text: i18nc("Switch to the listing page showing the most recently discovered books", "Recently Added Books");
-                        icon.name: "appointment-new";
+                        text: i18nc("Switch to the listing page showing the most recently discovered books", "Recently Added Books")
+                        icon.name: "appointment-new"
                         QQC2.ButtonGroup.group: placeGroup
                         onTriggered: Navigation.openLibrary(text, bookListModel.newlyAddedCategoryModel, true)
                     }
                     PlaceItem {
-                        text: i18nc("Open a book from somewhere on disk (uses the open dialog, or a drilldown on touch devices)", "Open Other...");
-                        icon.name: "document-open";
+                        text: i18nc("Open a book from somewhere on disk (uses the open dialog, or a drilldown on touch devices)", "Open Other...")
+                        icon.name: "document-open"
                         action: addBookAction
                         QQC2.ButtonGroup.group: null
                         checkable: false
                     }
 
                     PlaceItem {
-                        text: i18nc("Open the settings page", "Settings");
+                        text: i18nc("Open the settings page", "Settings")
                         icon.name: "configure"
                         onClicked: Navigation.openSettings()
                         QQC2.ButtonGroup.group: placeGroup
@@ -234,26 +220,26 @@ Kirigami.ApplicationWindow {
                         text: i18nc("Heading for switching to listing page showing items grouped by some properties", "Group By")
                     }
                     PlaceItem {
-                        text: i18nc("Switch to the listing page showing items grouped by author", "Author");
-                        icon.name: "actor";
+                        text: i18nc("Switch to the listing page showing items grouped by author", "Author")
+                        icon.name: "actor"
                         onTriggered: Navigation.openLibrary(text, bookListModel.authorCategoryModel, true)
                         QQC2.ButtonGroup.group: placeGroup
                     }
                     PlaceItem {
-                        text: i18nc("Switch to the listing page showing items grouped by series", "Series");
-                        icon.name: "edit-group";
+                        text: i18nc("Switch to the listing page showing items grouped by series", "Series")
+                        icon.name: "edit-group"
                         onTriggered: Navigation.openLibrary(i18nc("Title of the page with books grouped by what series they are in", "Group by Series"), bookListModel.seriesCategoryModel, true)
                         QQC2.ButtonGroup.group: placeGroup
                     }
                     PlaceItem {
-                        text: i18nc("Switch to the listing page showing items grouped by publisher", "Publisher");
-                        icon.name: "view-media-publisher";
+                        text: i18nc("Switch to the listing page showing items grouped by publisher", "Publisher")
+                        icon.name: "view-media-publisher"
                         onTriggered: Navigation.openLibrary(text, bookListModel.publisherCategoryModel, true)
                         QQC2.ButtonGroup.group: placeGroup
                     }
                     PlaceItem {
-                        text: i18nc("Switch to the listing page showing items grouped by genres", "Keywords");
-                        icon.name: "tag";
+                        text: i18nc("Switch to the listing page showing items grouped by genres", "Keywords")
+                        icon.name: "tag"
                         onTriggered: Navigation.openLibrary(i18nc("Title of the page with books grouped by genres", "Group by Genres"), bookListModel.keywordCategoryModel, true)
                         QQC2.ButtonGroup.group: placeGroup
                     }
@@ -263,6 +249,20 @@ Kirigami.ApplicationWindow {
             Item {
                 Layout.fillHeight: true
             }
+        }
+    }
+
+    component PlaceItem: Delegates.RoundedItemDelegate {
+        id: item
+        signal triggered
+        checkable: true
+        Layout.fillWidth: true
+        Keys.onDownPressed: nextItemInFocusChain().forceActiveFocus(Qt.TabFocusReason)
+        Keys.onUpPressed: nextItemInFocusChain(false).forceActiveFocus(Qt.TabFocusReason)
+        Accessible.role: Accessible.MenuItem
+        highlighted: checked || activeFocus
+        onToggled: if (checked) {
+            item.triggered();
         }
     }
 
@@ -277,25 +277,49 @@ Kirigami.ApplicationWindow {
         target: Navigation
 
         function onOpenBook(filename, locations, currentLocation, entry) {
+            let bookEntry = entry;
+            let bookLocations = locations;
+            let bookCurrentLocation = currentLocation;
+            let bookZoomLevel = bookEntry && bookEntry.zoomLevel > 0 ? bookEntry.zoomLevel : 1.0;
+
+            if (filename && (!bookEntry || !bookEntry.filename)) {
+                contentList.addFiles(['file://' + filename]);
+
+                const importedEntry = bookListModel.bookFromFile(filename);
+                if (importedEntry && importedEntry.filename) {
+                    bookEntry = importedEntry;
+                    bookLocations = importedEntry.locations;
+                    bookCurrentLocation = importedEntry.currentLocation;
+                    bookZoomLevel = importedEntry.zoomLevel > 0 ? importedEntry.zoomLevel : 1.0;
+                }
+            }
+
             const epubViewer = root.pageStack.layers.push('./EpubViewerPage.qml', {
-                currentLocation: currentLocation,
-                locations: locations,
+                currentLocation: bookCurrentLocation,
+                locations: bookLocations,
+                zoomLevel: bookZoomLevel,
                 filename: filename,
-                entry: entry,
+                entry: bookEntry,
                 // url change is a loading trigger so put this last
                 url: 'file://' + filename
             });
+
+            bookListModel.setBookData(filename, 'lastOpenedTime', new Date().toISOString());
 
             epubViewer.relocated.connect((newLocation, newProgress) => {
                 bookListModel.setBookData(filename, 'currentLocation', newLocation);
                 bookListModel.setBookData(filename, 'currentProgress', newProgress);
             });
 
-            epubViewer.locationsLoaded.connect((locations) => {
+            epubViewer.locationsLoaded.connect(locations => {
                 bookListModel.setBookData(filename, 'locations', locations);
             });
 
-            epubViewer.bookReady.connect((title) => {
+            epubViewer.zoomLevelSaved.connect(zoomLevel => {
+                bookListModel.setBookData(filename, 'zoomLevel', zoomLevel);
+            });
+
+            epubViewer.bookReady.connect(title => {
                 root.title = title;
             });
 
@@ -309,16 +333,16 @@ Kirigami.ApplicationWindow {
                 root.pageStack.replace(Qt.resolvedUrl('./LibraryPage.qml'), {
                     title: title,
                     bookListModel: model,
-                    actions: addBookAction
+                    addBookAction: addBookAction
                 });
                 root.pageStack.currentItem.title = title;
                 root.pageStack.currentItem.bookListModel = model;
                 return;
-            };
+            }
             if (replace) {
                 while (root.pageStack.depth > 1) {
                     root.pageStack.pop();
-                };
+                }
                 root.pageStack.currentItem.title = title;
                 root.pageStack.currentItem.bookListModel = model;
                 return;
@@ -327,14 +351,28 @@ Kirigami.ApplicationWindow {
             root.pageStack.push(Qt.resolvedUrl('./LibraryPage.qml'), {
                 title: title,
                 bookListModel: model,
+                addBookAction: addBookAction
             });
         }
 
         function onOpenSettings() {
             pageStack.pushDialogLayer(Qt.resolvedUrl('./SettingsPage.qml'), {}, {
                 title: i18n("Settings"),
-                width: Kirigami.Units.gridUnit * 24,
+                width: Kirigami.Units.gridUnit * 24
             });
+        }
+    }
+
+    FileDialog {
+        id: addBooksDialog
+
+        title: i18n("Add Books")
+        fileMode: FileDialog.OpenFiles
+        nameFilters: ["eBook files (*.epub *.cb* *.fb2 *.fb2zip)"]
+
+        onAccepted: {
+            const selectedBookFiles = files.length > 0 ? files : (file ? [file] : []);
+            contentList.addFiles(selectedBookFiles);
         }
     }
 
@@ -342,29 +380,7 @@ Kirigami.ApplicationWindow {
         id: addBookAction
         text: i18nc("@action:button", "Add Books…")
         icon.name: "list-add"
-        onTriggered: {
-            const fileDialog = openFileDialog.createObject(QQC2.ApplicationWindow.overlay)
-            fileDialog.accepted.connect(() => {
-                const files = fileDialog.files;
-                if (!files || files.length === 0) {
-                    return;
-                }
-                contentList.addFiles(files)
-            })
-            fileDialog.open();
-        }
-    }
-
-    Component {
-        id: openFileDialog
-
-        FileDialog {
-            id: root
-            parentWindow: applicationWindow()
-            title: i18n("Please choose files")
-            nameFilters: [i18nc("Name filter for EPUB files", "eBook files (*.epub *.cb* *.fb2 *.fb2zip)")]
-            fileMode: FileDialog.OpenFiles // Changed to support multiple files
-        }
+        onTriggered: addBooksDialog.open()
     }
 
     KConfig.WindowStateSaver {

@@ -12,6 +12,8 @@
 #include <QSet>
 #include <memory>
 
+using ResourceMap = QMap<QString, QString>;
+
 class KArchiveDirectory;
 class KArchiveFile;
 class QXmlStreamReader;
@@ -76,6 +78,7 @@ public:
     }
 
     QSharedPointer<QIODevice> ioDevice(const QString &path);
+    QByteArray readData(const QString &path);
     QImage image(const QString &id);
     QList<Collection> collections() const;
     QStringList metadata(const QStringView &key);
@@ -84,9 +87,26 @@ public:
         return m_orderedItems;
     }
 
+    QStringList manifestItemIds() const
+    {
+        return m_items.keys();
+    }
+
+public:
+    const QHash<QString, EpubItem> &manifestItems() const;
+
+    QByteArray createServerReadyEpub(const ResourceMap &resourceMap) const;
+
+    const KArchiveDirectory *rootDirectory() const;
+
     QString standardPage(EpubPageReference::StandardType type) const
     {
         return m_standardReferences.value(type).target;
+    }
+
+    QString filename() const
+    {
+        return m_filename;
     }
 
 Q_SIGNALS:
@@ -116,5 +136,6 @@ private:
 
     QHash<EpubPageReference::StandardType, EpubPageReference> m_standardReferences;
     QHash<QString, EpubPageReference> m_otherReferences;
+    QString m_filename;
     QMimeDatabase m_mimeDatabase;
 };

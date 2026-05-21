@@ -53,6 +53,7 @@ QHash<int, QByteArray> CategoryEntriesModel::roleNames() const
         {LastOpenedTimeRole, "lastOpenedTime"},
         {CurrentProgressRole, "currentProgress"},
         {CurrentLocationRole, "currentLocation"},
+        {ZoomLevelRole, "zoomLevel"},
         {CategoryEntriesModelRole, "categoryEntriesModel"},
         {CategoryEntryCountRole, "categoryEntriesCount"},
         {ThumbnailRole, "thumbnail"},
@@ -129,6 +130,8 @@ QVariant CategoryEntriesModel::data(const QModelIndex &index, int role) const
             return entry.lastOpenedTime;
         case CurrentProgressRole:
             return entry.currentProgress;
+        case ZoomLevelRole:
+            return entry.zoomLevel;
         case CurrentLocationRole:
             return entry.currentLocation;
         case CategoryEntriesModelRole:

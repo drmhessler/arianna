@@ -54,6 +54,8 @@ qt_target_qml_sources(arianna_static
 
         qml/jszip.min.js
         qml/utils.js
+
+       qml/background.webp  
 )
 
 ecm_qt_declare_logging_category(arianna_static
@@ -74,6 +76,10 @@ target_sources(arianna_static PRIVATE
     bookdatabase.h
     bookserver.cpp
     bookserver.h
+    editorprocess.cpp
+    editorprocess.h
+    translator.cpp
+    translator.h
     categoryentriesmodel.cpp
     categoryentriesmodel.h
     colorschemer.cpp
@@ -116,6 +122,7 @@ target_link_libraries(arianna_static PUBLIC
     KF6::Kirigami
     KF6::ConfigCore
     KF6::ConfigGui
+    KF6::ConfigQml
     KF6::WindowSystem
     KF6::DBusAddons
     KF6::FileMetaData
