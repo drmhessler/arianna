@@ -195,7 +195,51 @@ FormCard.FormCardPage {
 
         FormCard.FormDelegateSeparator {}
 
+        FormCard.FormTextFieldDelegate {
+            label: i18n("Reader background image")
+            text: Config.readerBackgroundPath
+            placeholderText: i18n("No background image")
+            onEditingFinished: {
+                Config.readerBackgroundPath = text.trim();
+                Config.save();
+            }
+        }
+
+        FormCard.FormDelegateSeparator {}
+
+        FormCard.FormButtonDelegate {
+            text: i18n("Choose background image…")
+            icon.name: "document-open"
+            onClicked: backgroundImageDialog.open()
+        }
+
+        FormCard.FormDelegateSeparator {}
+
+        FormCard.FormButtonDelegate {
+            text: i18n("Clear background image")
+            icon.name: "edit-clear"
+            enabled: Config.readerBackgroundPath.length > 0
+            onClicked: {
+                Config.readerBackgroundPath = "";
+                Config.save();
+            }
+        }
+
+        FormCard.FormDelegateSeparator {}
+
         ColorSchemeDelegate {}
+    }
+
+    Dialogs.FileDialog {
+        id: backgroundImageDialog
+
+        title: i18n("Choose background image")
+        fileMode: Dialogs.FileDialog.OpenFile
+        nameFilters: [i18n("Image files (*.png *.jpg *.jpeg *.webp *.gif *.svg)")]
+        onAccepted: {
+            Config.readerBackgroundPath = selectedFile.toString();
+            Config.save();
+        }
     }
 
     FormCard.FormHeader {

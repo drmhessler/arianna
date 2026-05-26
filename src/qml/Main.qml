@@ -187,7 +187,7 @@ Kirigami.ApplicationWindow {
                     width: scrollView.width
                     PlaceItem {
                         id: goHomeButton
-                        text: i18nc("Switch to the listing page showing the most recently read books", "Home")
+                        text: i18nc("Switch to the listing page showing the most recently read books, %1 is the number of books", "Home (%1)", root.bookListModel.count)
                         icon.name: "go-home"
                         checked: true
                         QQC2.ButtonGroup.group: placeGroup
@@ -331,11 +331,11 @@ Kirigami.ApplicationWindow {
         function onOpenLibrary(title, model, replace) {
             if (!root.pageStack.currentItem.bookListModel) {
                 root.pageStack.replace(Qt.resolvedUrl('./LibraryPage.qml'), {
-                    title: title,
+                    pageTitle: title,
                     bookListModel: model,
                     addBookAction: addBookAction
                 });
-                root.pageStack.currentItem.title = title;
+                root.pageStack.currentItem.pageTitle = title;
                 root.pageStack.currentItem.bookListModel = model;
                 return;
             }
@@ -343,13 +343,13 @@ Kirigami.ApplicationWindow {
                 while (root.pageStack.depth > 1) {
                     root.pageStack.pop();
                 }
-                root.pageStack.currentItem.title = title;
+                root.pageStack.currentItem.pageTitle = title;
                 root.pageStack.currentItem.bookListModel = model;
                 return;
             }
 
             root.pageStack.push(Qt.resolvedUrl('./LibraryPage.qml'), {
-                title: title,
+                pageTitle: title,
                 bookListModel: model,
                 addBookAction: addBookAction
             });

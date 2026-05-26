@@ -195,6 +195,7 @@ int main(int argc, char *argv[])
     webProfile->setPersistentCookiesPolicy(QWebEngineProfile::NoPersistentCookies);
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextObject(new KLocalizedQmlContext(&engine));
+    engine.rootContext()->setContextProperty(QStringLiteral("applicationFilePath"), QCoreApplication::applicationFilePath());
     engine.rootContext()->setContextProperty(QStringLiteral("serverToken"), serverToken);
     engine.rootContext()->setContextProperty(QStringLiteral("bookServerPort"), 45961);
     engine.loadFromModule("org.kde.arianna", "Main");

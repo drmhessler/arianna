@@ -15,17 +15,22 @@ html {
     --border: rgba(0, 0, 0, .15);
     --bg: var(--light-bg);
     --fg: var(--light-fg);
+    --arianna-reader-background-image:
+        linear-gradient(rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.86)),
+        url("http://127.0.0.1:45961/static/background-image");
+    --arianna-reader-background-position: center center;
+    --arianna-reader-background-repeat: no-repeat;
+    --arianna-reader-background-size: cover;
+    --arianna-reader-background-filter: none;
     height: 100%;
 }
 body {
     margin: 0 auto;
     height: 100%;
-    background:
-        linear-gradient(rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.86)),
-        url("http://127.0.0.1:45961/static/background.webp");
-    background-position: center center;
-    background-repeat: no-repeat;
-    background-size: cover;
+    background-image: var(--arianna-reader-background-image);
+    background-position: var(--arianna-reader-background-position);
+    background-repeat: var(--arianna-reader-background-repeat);
+    background-size: var(--arianna-reader-background-size);
     background-attachment: fixed;
     color: var(--fg);
 }
@@ -51,15 +56,6 @@ foliate-view {
 }
 foliate-view::part(filter) {
     color-scheme: light;
-    background:
-        linear-gradient(rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.86)),
-        url("http://127.0.0.1:45961/static/background.webp") !important;
-    background-position: center center !important;
-    background-repeat: no-repeat !important;
-    background-size: cover !important;
-}
-body.invert foliate-view::part(filter) {
-    background: #000 !important;
 }
 @media (prefers-color-scheme: dark) {
     foliate-view {

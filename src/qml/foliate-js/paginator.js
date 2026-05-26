@@ -227,8 +227,11 @@ class View {
             overflow: 'hidden',
             border: '0',
             display: 'none',
+            background: 'transparent',
+            backgroundColor: 'transparent',
             width: '100%', height: '100%',
         })
+        this.#iframe.setAttribute('allowtransparency', 'true')
         // `allow-scripts` is needed for events because of WebKit bug
         // https://bugs.webkit.org/show_bug.cgi?id=218086
         this.#iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts')
@@ -439,6 +442,38 @@ export class Paginator extends HTMLElement {
     #touchState
     #touchScrolled
     #lastVisibleRange
+    #getReaderBackground() {
+        const style = getComputedStyle(this)
+        const image = style.getPropertyValue('--arianna-reader-background-image').trim()
+        if (!image || image === 'none') return null
+        return {
+            image,
+            position: style.getPropertyValue('--arianna-reader-background-position').trim() || 'center center',
+            repeat: style.getPropertyValue('--arianna-reader-background-repeat').trim() || 'no-repeat',
+            size: style.getPropertyValue('--arianna-reader-background-size').trim() || 'cover',
+            filter: style.getPropertyValue('--arianna-reader-background-filter').trim() || 'none',
+        }
+    }
+    #setBackgroundStyle(style, background) {
+        style.setProperty('background-image', background.image, 'important')
+        style.setProperty('background-position', background.position, 'important')
+        style.setProperty('background-repeat', background.repeat, 'important')
+        style.setProperty('background-size', background.size, 'important')
+    }
+    #applyBackground(doc) {
+        const readerBackground = this.#getReaderBackground()
+        if (readerBackground) {
+            this.#setBackgroundStyle(this.#background.style, readerBackground)
+            this.#background.style.setProperty('filter', readerBackground.filter)
+            if (!doc) return
+            this.#setBackgroundStyle(doc.documentElement.style, readerBackground)
+            this.#setBackgroundStyle(doc.body.style, readerBackground)
+            return
+        }
+
+        this.#background.style.removeProperty('filter')
+        this.#background.style.background = getBackground(doc)
+    }
     constructor() {
         super()
         this.#root.innerHTML = `<style>
@@ -611,7 +646,7 @@ export class Paginator extends HTMLElement {
 
         this.#mediaQueryListener = () => {
             if (!this.#view) return
-            this.#background.style.background = getBackground(this.#view.document)
+            this.#applyBackground(this.#view.document)
         }
         this.#mediaQuery.addEventListener('change', this.#mediaQueryListener)
     }
@@ -665,14 +700,14 @@ export class Paginator extends HTMLElement {
         this.#container.append(this.#view.element)
         return this.#view
     }
-    #beforeRender({ vertical, rtl, background }) {
+    #beforeRender({ vertical, rtl }) {
         this.#vertical = vertical
         this.#rtl = rtl
         this.#top.classList.toggle('vertical', vertical)
 
-        // set background to `doc` background
-        // this is needed because the iframe does not fill the whole element
-        this.#background.style.background = background
+        // Set the host background, falling back to the document background.
+        // This is needed because the iframe does not fill the whole element.
+        this.#applyBackground(this.#view.document)
 
         const { width, height } = this.#container.getBoundingClientRect()
         const size = vertical ? height : width
@@ -1099,8 +1134,7 @@ export class Paginator extends HTMLElement {
         } else $style.textContent = styles
 
         // NOTE: needs `requestAnimationFrame` in Chromium
-        requestAnimationFrame(() =>
-            this.#background.style.background = getBackground(this.#view.document))
+        requestAnimationFrame(() => this.#applyBackground(this.#view.document))
 
         // needed because the resize observer doesn't work in Firefox
         this.#view?.document?.fonts?.ready?.then(() => this.#view.expand())

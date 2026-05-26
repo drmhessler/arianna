@@ -4,9 +4,11 @@
 #include "bookserver.h"
 #include "bookdatabase.h"
 #include "categoryentriesmodel.h"
+#include "config.h"
 
 #include <QAbstractSocket>
 #include <QFileInfo>
+#include <QMimeDatabase>
 #include <QTcpServer>
 
 #include <KArchiveDirectory>
@@ -27,6 +29,7 @@
 #include <QUrl>
 #include <qdeadlinetimer.h>
 #include <qdebug.h>
+#include <qdir.h>
 
 static void writeDiscoveryFile(quint16 port, const QString &serverToken)
 {
@@ -204,30 +207,68 @@ static QHttpServerResponse corsPreflightResponse(const QHttpServerRequest &reque
     return response;
 }
 
-std::shared_ptr<EPubContainer> BookServer::containerForIdentifier(const QString &identifier)
+void BookServer::clearServedResourcesForIdentifier(const QString &identifier)
 {
-    if (m_containerCache.contains(identifier)) {
-        qDebug() << "Container aus Cache:" << identifier;
-        return m_containerCache.value(identifier);
+    for (auto it = m_resourceByUuid.begin(); it != m_resourceByUuid.end();) {
+        if (it.value().identifier == identifier) {
+            it = m_resourceByUuid.erase(it);
+        } else {
+            ++it;
+        }
     }
 
+    m_servedFilesByIdentifier.remove(identifier);
+    m_resourceMapByIdentifier.remove(identifier);
+}
+
+std::shared_ptr<EPubContainer> BookServer::containerForIdentifier(const QString &identifier)
+{
     auto entry = BookDatabase::self().loadEntryByIdentifier(identifier);
 
     if (!entry) {
         qWarning() << "Kein BookEntry für Identifier:" << identifier;
+        m_containerCache.remove(identifier);
+        clearServedResourcesForIdentifier(identifier);
         return {};
+    }
+
+    const QFileInfo fileInfo(entry->filename);
+
+    if (!fileInfo.exists() || !fileInfo.isFile()) {
+        qWarning() << "EPUB-Datei existiert nicht mehr:" << entry->filename;
+        m_containerCache.remove(identifier);
+        clearServedResourcesForIdentifier(identifier);
+        return {};
+    }
+
+    const QString filename = fileInfo.absoluteFilePath();
+    const QDateTime lastModified = fileInfo.lastModified();
+    const qint64 size = fileInfo.size();
+
+    const auto cachedIt = m_containerCache.constFind(identifier);
+    if (cachedIt != m_containerCache.constEnd()) {
+        const CachedContainer &cached = cachedIt.value();
+        if (cached.container && cached.filename == filename && cached.lastModified == lastModified && cached.size == size) {
+            qDebug() << "Container aus Cache:" << identifier;
+            return cached.container;
+        }
+
+        qDebug() << "Container cache stale:" << identifier << filename << "old mtime:" << cached.lastModified << "new mtime:" << lastModified
+                 << "old size:" << cached.size << "new size:" << size;
+        m_containerCache.remove(identifier);
+        clearServedResourcesForIdentifier(identifier);
     }
 
     auto container = std::make_shared<EPubContainer>(nullptr);
 
-    if (!container->openFile(entry->filename)) {
-        qWarning() << "EPUB konnte nicht geöffnet werden:" << entry->filename;
+    if (!container->openFile(filename)) {
+        qWarning() << "EPUB konnte nicht geöffnet werden:" << filename;
         return {};
     }
 
-    m_containerCache.insert(identifier, container);
+    m_containerCache.insert(identifier, CachedContainer{container, filename, lastModified, size});
 
-    qDebug() << "Container aus DB geladen:" << identifier << entry->filename;
+    qDebug() << "Container aus DB geladen:" << identifier << filename << "mtime:" << lastModified << "size:" << size;
 
     return container;
 }
@@ -247,29 +288,38 @@ BookServer::BookServer(const QString &serverToken)
 {
     addSessionToken(m_serverToken);
 
-    server.route(QStringLiteral("/static/background.webp"), [](const QHttpServerRequest &request) {
+    server.route(QStringLiteral("/static/background-image"), [](const QHttpServerRequest &request) {
         Q_UNUSED(request)
-        qDebug() << "backgruound serverd";
-        QFile file(QStringLiteral(":/qt/qml/org/kde/arianna/qml/background.webp"));
+        qDebug() << "background Image ";
+        QString backgroundPath = Config::readerBackgroundPath();
+        if (backgroundPath.isEmpty()) {
+            return QHttpServerResponse{QHttpServerResponder::StatusCode::NotFound};
+        }
 
-        // Falls die Datei in einem Prefix liegt, z.B.:
-        // QFile file(QStringLiteral(":/qt/qml/org/kde/arianna/qml/background.webp"));
+        const QUrl backgroundUrl(backgroundPath);
+        if (backgroundUrl.isLocalFile()) {
+            backgroundPath = backgroundUrl.toLocalFile();
+        }
+
+        QFile file(backgroundPath);
 
         if (!file.open(QIODevice::ReadOnly)) {
-            qWarning() << "Unable to open qrc background.webp";
+            qWarning() << "Unable to open reader background image:" << backgroundPath;
             return QHttpServerResponse{QHttpServerResponder::StatusCode::NotFound};
         }
 
         const QByteArray data = file.readAll();
+        const QMimeDatabase mimeDatabase;
+        const QByteArray mimeType = mimeDatabase.mimeTypeForFile(backgroundPath, QMimeDatabase::MatchExtension).name().toUtf8();
 
-        QHttpServerResponse response(QByteArrayLiteral("image/webp"), data);
+        QHttpServerResponse response(mimeType.isEmpty() ? QByteArrayLiteral("application/octet-stream") : mimeType, data);
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
         auto headers = response.headers();
-        headers.append("Cache-Control", "public, max-age=3600");
+        headers.append("Cache-Control", "no-store");
         response.setHeaders(headers);
 #else
-    response.setHeader("Cache-Control", "public, max-age=3600");
+    response.setHeader("Cache-Control", "no-store");
 #endif
 
         return response;

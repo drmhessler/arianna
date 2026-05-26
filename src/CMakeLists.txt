@@ -54,8 +54,6 @@ qt_target_qml_sources(arianna_static
 
         qml/jszip.min.js
         qml/utils.js
-
-       qml/background.webp  
 )
 
 ecm_qt_declare_logging_category(arianna_static

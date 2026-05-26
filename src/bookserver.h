@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDateTime>
 #include <QHttpServer>
 #include <QHttpServerResponse>
 #include <QMap>
@@ -23,9 +24,16 @@ public:
 private:
     bool isValidToken(const QString &token) const;
     std::shared_ptr<EPubContainer> containerForIdentifier(const QString &identifier);
+    void clearServedResourcesForIdentifier(const QString &identifier);
     struct ServedResource {
         QString identifier;
         QString path;
+    };
+    struct CachedContainer {
+        std::shared_ptr<EPubContainer> container;
+        QString filename;
+        QDateTime lastModified;
+        qint64 size = -1;
     };
     QHttpServer server;
     QString m_serverToken;
@@ -33,6 +41,6 @@ private:
     QHash<QString, ServedResource> m_resourceByUuid;
     QMap<QString, QSet<QString>> m_servedFilesByIdentifier;
     QMap<QString, QMap<QString, QString>> m_resourceMapByIdentifier;
-    QMap<QString, std::shared_ptr<EPubContainer>> m_containerCache;
+    QMap<QString, CachedContainer> m_containerCache;
     bool m_running = false;
 };

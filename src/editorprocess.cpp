@@ -34,6 +34,15 @@ void EditorProcess::start(const QString &program, const QStringList &arguments)
     process->start(program, arguments);
 }
 
+bool EditorProcess::startDetached(const QString &program, const QStringList &arguments)
+{
+    if (program.isEmpty()) {
+        return false;
+    }
+
+    return QProcess::startDetached(program, arguments);
+}
+
 void EditorProcess::stop()
 {
     if (process->state() == QProcess::NotRunning) {

@@ -19,6 +19,7 @@ public:
     explicit EditorProcess(QObject *parent = nullptr);
 
     Q_INVOKABLE void start(const QString &program, const QStringList &arguments);
+    Q_INVOKABLE bool startDetached(const QString &program, const QStringList &arguments = {});
     Q_INVOKABLE void stop();
     Q_INVOKABLE QByteArray readAllStandardOutput();
     Q_INVOKABLE QByteArray readAllStandardError();

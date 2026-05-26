@@ -77,9 +77,7 @@ Kirigami.Page {
             maxSpreadColumns: 2
         });
 
-        const bookUrl = root.entry && root.entry.identifier
-            ? "http://127.0.0.1:45961/" + encodeURIComponent(root.entry.identifier) + "/book.epub"
-            : "http://127.0.0.1:45961/book?url=" + encodeURIComponent(root.url);
+        const bookUrl = root.entry && root.entry.identifier ? "http://127.0.0.1:45961/" + encodeURIComponent(root.entry.identifier) + "/book.epub" : "http://127.0.0.1:45961/book?url=" + encodeURIComponent(root.url);
         const urlNormalized = JSON.stringify(bookUrl);
         console.info("opening book", urlNormalized, renderTo, options);
         const initLocation = reloadLocation ? reloadLocation : currentLocation;
@@ -87,6 +85,20 @@ Kirigami.Page {
         reloadLocation = null;
         view.bookReady = false;
         view.runJavaScript(`openSync(${urlNormalized}, ${initCfi})`);
+    }
+
+    function reloadCurrentBook() {
+        if (backend.location && backend.location.cfi) {
+            root.currentLocation = backend.location.cfi;
+            root.reloadLocation = backend.location.cfi;
+        }
+
+        if (view.loading) {
+            reloadChangedBookTimer.restart();
+            return;
+        }
+
+        view.reload();
     }
 
     title: backend.metadata ? backend.metadata.title : ''
@@ -102,6 +114,9 @@ Kirigami.Page {
         }
         function onKdeThemingChanged() {
             backend.applyStyle();
+        }
+        function onReaderBackgroundPathChanged() {
+            view.reload();
         }
     }
 
@@ -237,6 +252,24 @@ Kirigami.Page {
         }
     }
 
+    Connections {
+        target: EditorProcess
+        function onEditedFileChanged(file) {
+            if (file !== root.filename && root.url !== "file://" + file) {
+                return;
+            }
+
+            reloadChangedBookTimer.restart();
+        }
+    }
+
+    Timer {
+        id: reloadChangedBookTimer
+        interval: 500
+        repeat: false
+        onTriggered: root.reloadCurrentBook()
+    }
+
     Window {
         id: translatorDialog
         visible: false
@@ -290,6 +323,12 @@ Kirigami.Page {
                         EditorProcess.start('/usr/local/bin/ebook-edit-check', [root.filename]);
                     }
                 }
+            } else if (event.modifiers & Qt.AltModifier) {
+                if (event.key === Qt.Key_Left) {
+                    view.goBack();
+                } else if (event.key === Qt.Key_Right) {
+                    view.goForward();
+                }
             } else {
                 if (event.key === Qt.Key_Left) {
                     view.prev();
@@ -309,6 +348,8 @@ Kirigami.Page {
         webChannel: channel
         property bool readerReady: false
         property bool bookReady: false
+        property bool readerCanGoBack: false
+        property bool readerCanGoForward: false
 
         settings.javascriptEnabled: true
         settings.localContentCanAccessRemoteUrls: true
@@ -337,6 +378,8 @@ Kirigami.Page {
         onLoadingChanged: if (loading) {
             readerReady = false;
             bookReady = false;
+            readerCanGoBack = false;
+            readerCanGoForward = false;
         }
 
         function next() {
@@ -369,6 +412,18 @@ Kirigami.Page {
             }
         }
 
+        function goBack() {
+            if (bookReady && readerCanGoBack) {
+                view.runJavaScript('reader.view.history.back()');
+            }
+        }
+
+        function goForward() {
+            if (bookReady && readerCanGoForward) {
+                view.runJavaScript('reader.view.history.forward()');
+            }
+        }
+
         QQC2.Menu {
             id: selectionPopup
             Connections {
@@ -391,6 +446,19 @@ Kirigami.Page {
             }
 
             QQC2.MenuItem {
+                text: i18n("Edit at Text")
+                icon.name: 'document-edit'
+                enabled: root.filename !== "" && backend.selection && backend.selection.text
+                onClicked: {
+                    if (!backend.selection || !backend.selection.text) {
+                        return;
+                    }
+
+                    EditorProcess.start('/usr/local/bin/ebook-edit-check', [root.filename, '--select-text', backend.selection.text]);
+                    view.runJavaScript("selectionAction('edit-at-text')");
+                }
+            }
+            QQC2.MenuItem {
                 text: i18n("Translate")
                 icon.name: 'edit-find-replace'
                 onClicked: view.runJavaScript("selectionAction('translate')")
@@ -401,7 +469,14 @@ Kirigami.Page {
     // Allows the user to move pages by rotating the wheel or zoom with Ctrl+wheel
     MouseArea {
         anchors.fill: view
-        acceptedButtons: Qt.NoButton
+        acceptedButtons: Qt.BackButton | Qt.ForwardButton
+        onClicked: mouse => {
+            if (mouse.button === Qt.BackButton) {
+                view.goBack();
+            } else if (mouse.button === Qt.ForwardButton) {
+                view.goForward();
+            }
+        }
         onWheel: event => {
             if (event.modifiers & Qt.ControlModifier) {
                 const dx = event.angleDelta.x;
@@ -487,6 +562,16 @@ Kirigami.Page {
                 QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
             }
             QQC2.ToolButton {
+                text: i18n("Back")
+                display: QQC2.AbstractButton.IconOnly
+                icon.name: "go-previous-view"
+                enabled: view.readerCanGoBack
+                onClicked: view.goBack()
+                QQC2.ToolTip.text: text
+                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+            }
+            QQC2.ToolButton {
                 text: i18n("Previous Page")
                 display: QQC2.AbstractButton.IconOnly
                 icon.name: "arrow-left"
@@ -513,6 +598,16 @@ Kirigami.Page {
                 }
                 live: false
                 Layout.fillWidth: true
+            }
+            QQC2.ToolButton {
+                text: i18n("Forward")
+                display: QQC2.AbstractButton.IconOnly
+                icon.name: "go-next-view"
+                enabled: view.readerCanGoForward
+                onClicked: view.goForward()
+                QQC2.ToolTip.text: text
+                QQC2.ToolTip.visible: hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
             }
             QQC2.ToolButton {
                 text: i18n("Next Page")
@@ -626,6 +721,10 @@ Kirigami.Page {
                 backend.timeInBook = Math.round(action.payload.time.total * 60);
                 root.relocated(action.payload.cfi, action.payload.fraction * 100);
                 backend.locationsReady = true;
+                break;
+            case 'history-index-change':
+                view.readerCanGoBack = action.payload.canGoBack;
+                view.readerCanGoForward = action.payload.canGoForward;
                 break;
             case 'find-results':
                 searchResultModel.resultFound(action.payload.query, action.payload.results);
@@ -759,15 +858,94 @@ Kirigami.Page {
                     stroke: currentColor !important;
                 }
             `;
+
             const transparentStylesheet = `
                 html, body {
                     background: transparent !important;
                     background-color: transparent !important;
                 }
                 body * {
+                    background: transparent !important;
                     background-color: transparent !important;
+                    background-image: none !important;
                 }
             `;
+
+            const hasReaderBackground = Config.readerBackgroundPath.length > 0;
+            const readerBackgroundImage = hasReaderBackground && Config.invert ? 'linear-gradient(rgba(0, 0, 0, 0.86), rgba(0, 0, 0, 0.86)), url("http://127.0.0.1:45961/static/background-image")' : hasReaderBackground ? 'linear-gradient(rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.86)), url("http://127.0.0.1:45961/static/background-image")' : '';
+            const readerBackgroundFilter = 'none';
+            const readerBackgroundStylesheet = hasReaderBackground ? `
+                body {
+                    isolation: isolate;
+                    position: relative;
+                }
+                body::before {
+                    content: "";
+                    position: fixed;
+                    inset: 0;
+                    z-index: 0;
+                    pointer-events: none;
+                    background-image: ${readerBackgroundImage};
+                    background-position: center center;
+                    background-repeat: no-repeat;
+                    background-size: cover;
+                    filter: ${readerBackgroundFilter};
+                }
+                body > * {
+                    position: relative;
+                    z-index: 1;
+                }
+            ` : '';
+            const invertBackgroundStylesheet = hasReaderBackground ? `
+                html, body {
+                    color: #ffffff !important;
+                    background: transparent !important;
+                    background-color: transparent !important;
+                }
+                *, *::before, *::after {
+                    color: inherit !important;
+                    border-color: currentColor !important;
+                    background-color: transparent !important;
+                }
+                body * {
+                    background: transparent !important;
+                    background-color: transparent !important;
+                    background-image: none !important;
+                }
+                a:any-link {
+                    color: #8ab4f8 !important;
+                }
+                svg, img {
+                    background-color: transparent !important;
+                    filter: invert(1) hue-rotate(180deg) !important;
+                }
+                svg.not_inverse,
+                img.not_inverse,
+                .not_inverse svg,
+                .not_inverse img {
+                    filter: none !important;
+                }
+                mjx-container,
+                mjx-container *,
+                mjx-container svg,
+                mjx-container svg * {
+                    color: #ffffff !important;
+                    background: transparent !important;
+                    background-color: transparent !important;
+                    border-color: currentColor !important;
+                    stroke: currentColor !important;
+                }
+                mjx-container svg {
+                    filter: none !important;
+                    fill: currentColor !important;
+                }
+                mjx-container svg [fill="none"] {
+                    fill: none !important;
+                }
+                mjx-container svg [stroke] {
+                    stroke: currentColor !important;
+                }
+            ` : invertStylesheet;
 
             const style = {
                 layout: {
@@ -786,7 +964,9 @@ Kirigami.Page {
                     invert: Config.invert,
                     theme: Config.kdeTheming ? kdeTheme : defaultTheme,
                     overrideFont: !Config.usePublisherFont,
-                    userStylesheet: Config.invert ? invertStylesheet : transparentStylesheet
+                    userStylesheet: (Config.invert ? invertBackgroundStylesheet : transparentStylesheet) + readerBackgroundStylesheet,
+                    readerBackgroundImage: readerBackgroundImage,
+                    readerBackgroundFilter: readerBackgroundFilter
                 }
             };
 
@@ -820,14 +1000,23 @@ Kirigami.Page {
     }
 
     Shortcut {
+        sequence: "Alt+Left"
+        onActivated: view.goBack()
+    }
+
+    Shortcut {
+        sequence: "Alt+Right"
+        onActivated: view.goForward()
+    }
+
+    Shortcut {
         sequence: "Ctrl+R"
         enabled: !view.loading
-        onActivated: {
-            if (backend.location && backend.location.cfi) {
-                root.currentLocation = backend.location.cfi;
-                root.reloadLocation = backend.location.cfi;
-            }
-            view.reload();
-        }
+        onActivated: root.reloadCurrentBook()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+B"
+        onActivated: EditorProcess.startDetached(applicationFilePath, [])
     }
 }

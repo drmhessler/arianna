@@ -43,6 +43,10 @@ SPDX-License-Identifier: CC0-1.0
       <label>KDE Theming</label>
       <default>true</default>
     </entry>
+    <entry name="readerBackgroundPath" type="String">
+      <label>Reader background image path</label>
+      <default></default>
+    </entry>
     <entry name="justify" type="bool">
       <label>Justify text</label>
       <default>true</default>

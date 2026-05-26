@@ -17,8 +17,11 @@ Kirigami.ScrollablePage {
 
     property CategoryEntriesModel bookListModel
     property var addBookAction
+    property string pageTitle: i18n("Library")
+    property bool showBookCount: root.bookListModel === applicationWindow().bookListModel
+    readonly property int totalBookCount: applicationWindow().bookListModel ? applicationWindow().bookListModel.count : 0
 
-    title: i18n("Library")
+    title: showBookCount ? i18nc("@title:window, %1 is the page title and %2 is the number of books", "%1 (%2)", pageTitle, totalBookCount) : pageTitle
     actions: [
         Kirigami.Action {
             text: i18nc("@action:button", "Sort")
@@ -124,11 +127,12 @@ Kirigami.ScrollablePage {
                 Navigation.openBook(filename, locations, currentLocation, entry);
             }
 
-            RowLayout {
+            ColumnLayout {
                 anchors {
-                    top: parent.top
+                    bottom: parent.bottom
                     right: parent.right
-                    margins: Kirigami.Units.largeSpacing
+                    rightMargin: Kirigami.Units.largeSpacing
+                    bottomMargin: bookDelegate.height - (bookDelegate.width - Kirigami.Units.largeSpacing)
                 }
                 z: 1
                 spacing: Kirigami.Units.smallSpacing

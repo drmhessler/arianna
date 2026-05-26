@@ -438,7 +438,15 @@ class Reader {
             renderer.setAttribute('flow', 'scrolled')
             renderer.setAttribute('margin', '12px')
             renderer.setAttribute('gap', '5%')
-            renderer.setStyles(getCSS(this.style))
+            renderer.setStyles([
+                ...getCSS(this.style),
+                `
+                body {
+                    text-align: justify;
+                    hyphens: auto;
+                }
+                `,
+            ])
         })
         //Add the Dialog element in the main.html: footnote-dialog
         this.#footnoteHandler.addEventListener('render', e => {
@@ -477,8 +485,22 @@ class Reader {
         $style.setProperty('--light-fg', theme.light.fg)
         $style.setProperty('--dark-bg', theme.dark.bg)
         $style.setProperty('--dark-fg', theme.dark.fg)
+        if (style.readerBackgroundImage) {
+            $style.setProperty('--arianna-reader-background-image', style.readerBackgroundImage)
+            $style.setProperty('--arianna-reader-background-filter', style.readerBackgroundFilter ?? 'none')
+        } else {
+            $style.removeProperty('--arianna-reader-background-image')
+            $style.removeProperty('--arianna-reader-background-filter')
+        }
         const renderer = this.view?.renderer
         if (renderer) {
+            if (style.readerBackgroundImage) {
+                renderer.style.setProperty('--arianna-reader-background-image', style.readerBackgroundImage)
+                renderer.style.setProperty('--arianna-reader-background-filter', style.readerBackgroundFilter ?? 'none')
+            } else {
+                renderer.style.removeProperty('--arianna-reader-background-image')
+                renderer.style.removeProperty('--arianna-reader-background-filter')
+            }
             renderer.setAttribute('flow', layout.flow)
             renderer.setAttribute('gap', layout.gap * 100 + '%')
             renderer.setAttribute('max-inline-size', layout.maxInlineSize + 'px')

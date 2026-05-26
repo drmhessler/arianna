@@ -62,7 +62,8 @@ Delegates.RoundedItemDelegate {
             id: coverArea
 
             readonly property real baseCoverMargin: Kirigami.Settings.isMobile ? 0 : Kirigami.Units.largeSpacing
-            readonly property real hoverCoverMargin: gridEntry.shrinkCoverOnHover && gridEntry.hovered ? Kirigami.Units.gridUnit * 2 : 0
+            readonly property real actionRailWidth: Kirigami.Units.gridUnit * 2 + Kirigami.Units.smallSpacing
+            readonly property real hoverCoverInset: gridEntry.shrinkCoverOnHover && gridEntry.hovered ? actionRailWidth * 0.2 : 0
 
             Layout.fillWidth: true
             Layout.preferredHeight: gridEntry.width - 2 * Kirigami.Units.largeSpacing
@@ -85,9 +86,9 @@ Delegates.RoundedItemDelegate {
                     top: parent.top
                     left: parent.left
                     right: parent.right
-                    topMargin: coverArea.baseCoverMargin + coverArea.hoverCoverMargin
+                    topMargin: coverArea.baseCoverMargin + coverArea.hoverCoverInset
                     leftMargin: coverArea.baseCoverMargin
-                    rightMargin: coverArea.baseCoverMargin + coverArea.hoverCoverMargin
+                    rightMargin: coverArea.baseCoverMargin + coverArea.hoverCoverInset
                 }
 
                 Behavior on anchors.topMargin {
