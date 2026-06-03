@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  - SPDX-License-Identifier: CC0-1.0
+  - SPDX-FileCopyrightText: 2022 Carl Schwan <carlschwan@kde.org>
+ -->
+<component type="desktop">
+  <id>org.kde.arianna</id>
+  <provides>
+    <binary>arianna</binary>
+  </provides>
+  <name>Arianna</name>
+  <name xml:lang="ar">أريانا</name>
+  <name xml:lang="ast">Arianna</name>
+  <name xml:lang="ca">Arianna</name>
+  <name xml:lang="ca-valencia">Arianna</name>
+  <name xml:lang="cs">Arianna</name>
+  <name xml:lang="de">Arianna</name>
+  <name xml:lang="en-GB">Arianna</name>
+  <name xml:lang="eo">Arianna</name>
+  <name xml:lang="es">Arianna</name>
+  <name xml:lang="eu">Arianna</name>
+  <name xml:lang="fi">Arianna</name>
+  <name xml:lang="fr">Arianna</name>
+  <name xml:lang="gl">Arianna</name>
+  <name xml:lang="he">אריאנה</name>
+  <name xml:lang="hi">एरीना</name>
+  <name xml:lang="hu">Arianna</name>
+  <name xml:lang="ia">Arianna</name>
+  <name xml:lang="id">Arianna</name>
+  <name xml:lang="is">Arianna</name>
+  <name xml:lang="it">Arianna</name>
+  <name xml:lang="ka">არიანა</name>
+  <name xml:lang="ko">Arianna</name>
+  <name xml:lang="lt">Arianna</name>
+  <name xml:lang="lv">Arianna</name>
+  <name xml:lang="nl">Arianna</name>
+  <name xml:lang="pl">Arianna</name>
+  <name xml:lang="pt">Arianna</name>
+  <name xml:lang="pt-BR">Arianna</name>
+  <name xml:lang="ro">Arianna</name>
+  <name xml:lang="ru">Arianna</name>
+  <name xml:lang="sa">एरियान्ना</name>
+  <name xml:lang="sk">Arianna</name>
+  <name xml:lang="sl">Arianna</name>
+  <name xml:lang="sv">Arianna</name>
+  <name xml:lang="tr">Arianna</name>
+  <name xml:lang="uk">Arianna</name>
+  <name xml:lang="zh-CN">Arianna</name>
+  <name xml:lang="zh-TW">Arianna</name>
+  <summary>EBook reader</summary>
+  <summary xml:lang="ar">قارئ كتب إلكترونية</summary>
+  <summary xml:lang="ca">Lector de llibres electrònics</summary>
+  <summary xml:lang="ca-valencia">Lector de llibres electrònics</summary>
+  <summary xml:lang="cs">Čtečka e-knih</summary>
+  <summary xml:lang="de">EBook-Reader-Anwendung</summary>
+  <summary xml:lang="eo">Bitlibra legilo</summary>
+  <summary xml:lang="es">Lector de eBook</summary>
+  <summary xml:lang="eu">eLiburuki irakurlea</summary>
+  <summary xml:lang="fi">Sähkökirjalukija</summary>
+  <summary xml:lang="fr">Lecteur de fichiers « eBook »</summary>
+  <summary xml:lang="gl">Lector de libros electrónicos</summary>
+  <summary xml:lang="he">מציג ספרים דיגיטליים</summary>
+  <summary xml:lang="hi">ईबुक रीडर</summary>
+  <summary xml:lang="hu">E-könyvolvasó</summary>
+  <summary xml:lang="ia">Lector de EBook</summary>
+  <summary xml:lang="is">Rafbókalesari</summary>
+  <summary xml:lang="it">Lettore EBook</summary>
+  <summary xml:lang="ka">ელწიგნების მკითხველი</summary>
+  <summary xml:lang="ko">전자책 리더</summary>
+  <summary xml:lang="lt">El. knygų skaitytuvė</summary>
+  <summary xml:lang="lv">E-grāmatu lasītājs</summary>
+  <summary xml:lang="nl">E-book-lezer</summary>
+  <summary xml:lang="pl">Czytnik Ebooków</summary>
+  <summary xml:lang="pt-BR">Leitor de ebook</summary>
+  <summary xml:lang="ru">Приложение для чтения электронных книг</summary>
+  <summary xml:lang="sa">ईपुस्तक पाठक</summary>
+  <summary xml:lang="sk">Čítačka elektronických kníh</summary>
+  <summary xml:lang="sl">Bralnik elektronskih knjig</summary>
+  <summary xml:lang="sv">E-bokläsare</summary>
+  <summary xml:lang="tr">E-kitap Okuyucusu</summary>
+  <summary xml:lang="uk">Читання електронних книг</summary>
+  <summary xml:lang="zh-CN">电子书阅读器</summary>
+  <summary xml:lang="zh-TW">電子書閱讀器</summary>
+  <description>
+    <p>An ebook reader and library management app supporting ".epub" files. Arianna discovers your books automatically, and sorts them by categories, genres and authors.</p>
+    <p xml:lang="ar">قارئ كُتب إلكترونية ومدير للمكتبة وداعم لملفات ".epub". أريانا يكتشف كتبك آليّا ويرتبها بواسطة التصنيفات والأنواع والكتاب</p>
+    <p xml:lang="ca">Una aplicació de lectura de llibres electrònics i gestió de biblioteques que permet fitxers «.epub». L'Arianna descobreix automàticament els vostres llibres, i els ordena per categories, gèneres i autors.</p>
+    <p xml:lang="ca-valencia">Una aplicació de lectura de llibres electrònics i gestió de biblioteques que permet fitxers «.epub». Arianna descobrix automàticament els vostres llibres, i els ordena per categories, gèneres i autors.</p>
+    <p xml:lang="cs">Čtečka elektronických knih a aplikace pro správu knihovny podporující soubory „.epub“. Arianna automaticky vyhledává vaše knihy a třídí je podle kategorií, žánrů a autorů.</p>
+    <p xml:lang="de">EBook-Reader-Anwendung und Bibliotheksverwaltung mit Unterstützung für „.epub“-Dateien. Arianna findet Ihre Bücher automatisch und sortiert sie nach Kategorien, Genres und Autoren.</p>
+    <p xml:lang="en-GB">An ebook reader and library management app supporting ".epub" files. Arianna discovers your books automatically, and sorts them by categories, genres and authors.</p>
+    <p xml:lang="eo">Ebook-legilo kaj biblioteka administradprogramo subtenanta ".epub" dosierojn. Arianna malkovras viajn librojn aŭtomate, kaj ordigas ilin laŭ kategorioj, ĝenroj kaj aŭtoroj.</p>
+    <p xml:lang="es">Un lector de eBook y aplicación de gestión de biblioteca compatible con archivos «.epub». Arianna descubre sus libros automáticamente y los ordena por categorías, géneros y autores.</p>
+    <p xml:lang="eu">eLiburuki irakurle eta liburutegia kudeatzeko aplikazio bat, ".epub" fitxategien euskarria duena. «Arianna»k zure liburuak automatikoki aurkitzen ditu, eta kategoria, genero eta egileen arabera sailkatzen ditu.</p>
+    <p xml:lang="fi">E-kirjalukija- ja kirjastonhallintasovellus, joka tukee ”.epub”-tiedostoja. Arianna löytää kirjat automaattisesti ja lajittelee ne luokittain, tyylilajeittain ja tekijöittäin.</p>
+    <p xml:lang="fr">Un lecteur de fichier au format « eBook » et une application de gestion de bibliothèque prenant en charge les fichiers au format « ePub ». Arianna identifie automatiquement vos livres et les trie par catégories, genres et auteurs.</p>
+    <p xml:lang="gl">Aplicación para ler libros electrónicos e xestionar a biblioteca que permite ficheiros «.epub». Arianna amósalle os libros directamente, ordenados por categoría, xénero e autoría.</p>
+    <p xml:lang="he">יישום להצגת ספרים דיגיטליים ולניהול ספרייה שתומך בקובצי „‎.epub”. אריאנה מגלה את הספרים שלך אוטומטית וממיינת אותם לפי קטגוריות, סוגות ומחברים/מחברות.</p>
+    <p xml:lang="hi">एक ईबुक रीडर और लाइब्रेरी प्रबंधन ऐप जो ".epub" फ़ाइलों का समर्थन करता है। एरियाना आपकी पुस्तकों को स्वचालित रूप से खोजता है, और उन्हें श्रेणियों, शैलियों और लेखकों के आधार पर क्रमबद्ध करता है।</p>
+    <p xml:lang="hu">E-könyvolvasó és könyvtárkezelő alkalmazás, amely támogatja az „.epub” fájlokat. Az Arianna automatikusan megtalálja a könyveit, és rendezi azokat kategória, műfaj és szerző szerint.</p>
+    <p xml:lang="ia">Un lector de ebook de app gerente de bibliotheca supportante files de ".epub". Arianna discopere tu libros automaticamente, e los ordina per categorias, generes e autores.</p>
+    <p xml:lang="id">Aplikasi pembaca buku elektronik dan pengelolaan pustaka yang mendukung file ".epub". Arianna menemukan buku Anda secara otomatis, dan mengurutkannya berdasarkan kategori, genre, dan penulis.</p>
+    <p xml:lang="is">Rafbókalesari og umsjónarforrit fyrir rafbækur sem styður ".epub"-skrár. Arianna finnur bækurnar þínar sjálfkrafa og raðar þeim eftir flokkum, tegundum og höfundum.</p>
+    <p xml:lang="it">Un lettore di ebook e gestore di libreria che supporta file «.epub». Arianna individua automaticamente i libri e li ordina per categorie, generi e autori.</p>
+    <p xml:lang="ka">ელწიგნების წასაკითხი და ბიბლიოთეკების მმართველი აპლიკაცია ".epub" ფაილების მხარდაჭერით. Arianna ავტომატურად აღმოაჩენს თქვენს წიგნებს და მათ კატეგორიების, ჟანრების და ავტორების მიხედვით დაალაგებს.</p>
+    <p xml:lang="ko">".epub" 파일을 지원하는 전자책 리더 및 관리 앱입니다. Arianna는 책을 자동으로 발견하여 분류, 장르, 저자별로 정렬합니다.</p>
+    <p xml:lang="lt">El. knygų skaitytuvė ir bibliotekos tvarkymo programa, palaikanti „.epub“ failus. Arianna automatiškai atranda knygas ir surikiuoja jas pagal kategorijas, žanrus bei autorius.</p>
+    <p xml:lang="lv">E-grāmatu lasītājs un bibliotēkas pārvaldīšanas rīks, kas atbalsta „epub“ formāta datnes. „Arianna“ automātiski atrod ierīcē esošās grāmatas un tās sašķiro pēc kategorijas, žanra un autora.</p>
+    <p xml:lang="nl">Een e-boeklezer en toepassing voor bibliotheekbeheer die ".epub"-bestanden ondersteunt. Arianna ontdekt uw boeken automatisch en sorteert ze op categorieën, genres en auteurs.</p>
+    <p xml:lang="pl">Czytnik ebooków i zarządzanie biblioteką z obsługą plików ".epub". Arianna wykryje twoje książki samodzielnie i pogrupuje je po kategoriach, gatunkach i autorach.</p>
+    <p xml:lang="pt">Um leitor de e-books e de gestão de bibliotecas de ficheiros ".epub". O Arianna descobre automaticamente os seus livros, ordenando-os por categorias, géneros e autores.</p>
+    <p xml:lang="pt-BR">Um leitor de e-books e aplicativo de gerenciamento de biblioteca com suporte para arquivos ".epub". O Arianna descobre seus livros automaticamente e os classifica por categorias, gêneros e autores.</p>
+    <p xml:lang="ro">Cititor de cărți electronice și aplicație de gestiune a bibliotecii cu suport pentru fișiere „.epub”. Arianna vă descoperă automat cărțile și le sortează pe categorii, genuri și autori.</p>
+    <p xml:lang="ru">Приложение для чтения электронных книг и управления библиотекой с поддержкой файлов «.epub». Arianna автоматически обнаруживает книги и сортирует их по категориям, жанрам и авторам.</p>
+    <p xml:lang="sa">".epub" सञ्चिकानां समर्थनं कुर्वन् एकः ईपुस्तकपाठकः पुस्तकालयप्रबन्धन-अनुप्रयोगः च । एरियाना भवतः पुस्तकानि स्वयमेव आविष्करोति, श्रेणीभिः, विधैः, लेखकैः च क्रमेण क्रमयति ।</p>
+    <p xml:lang="sk">Čítačka elektronických kníh a aplikácia na správu knižnice podporujúca súbory ".epub". Arianna automaticky vyhľadáva vaše knihy a triedi ich podľa kategórií, žánrov a autorov.</p>
+    <p xml:lang="sl">Bralnik elektronskih knjig in upravljalnik knjižnice, ki podpira datoteke ".epub". Arianna samodejno odkriva vaše knjige in jih razvrsti po kategorijah, žanrih in avtorjih.</p>
+    <p xml:lang="sv">En e-bokläsare och bibliotekshanterare som stöder ".epub"-filer. Arianna upptäcker dina böcker automatiskt och sorterar dem efter kategorier, genrer och författare.</p>
+    <p xml:lang="tr">“.epub” dosyalarını destekleyen bir e-kitap okuyucusu ve kitaplık yönetim uygulaması. Arianna kitaplarınızı kendiliğinden bulur ve onları kategoriye, türe ve yazarlara göre sıralar.</p>
+    <p xml:lang="uk">Програма для читання та керування бібліотекою з підтримкою файлів «.epub». Arianna автоматично виявить ваші книги і упорядкує їх за категоріями, жанрами та авторами.</p>
+    <p xml:lang="zh-CN">支持“.epub”文件的电子书阅读器和书库管理。Arianna 可以自动索引您的书籍，并按照类别、体裁或作者整理。</p>
+    <p xml:lang="zh-TW">一個電子書閱讀器與書庫管理應用程式，支援 ".epub" 檔案。Arianna 會自動探索您的書本，並依分類、風格與作者排序。</p>
+  </description>
+  <url type="homepage">https://apps.kde.org/arianna/</url>
+  <url type="bugtracker">https://bugs.kde.org/enter_bug.cgi?product=Arianna</url>
+  <url type="vcs-browser">https://invent.kde.org/graphics/arianna</url>
+  <categories>
+    <category>Network</category>
+  </categories>
+  <developer id="org.kde">
+    <name translate="no">KDE</name>
+    <url>https://kde.org</url>
+  </developer>
+  <supports>
+    <control>pointing</control>
+    <control>touch</control>
+    <control>keyboard</control>
+  </supports>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0</project_license>
+  <custom>
+    <value key="KDE::matrix">#arianna:kde.org</value>
+    <value key="KDE::mastodon">https://kde.social/@arianna</value>
+    <value key="KDE::supporters"> </value>
+  </custom>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://cdn.kde.org/screenshots/arianna/library-view.png</image>
+    </screenshot>
+    <screenshot type="default">
+      <image>https://cdn.kde.org/screenshots/arianna/reader.png</image>
+    </screenshot>
+    <screenshot>
+      <image>https://cdn.kde.org/screenshots/arianna/reader-search.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="26.04.1" date="2026-05-07"/>
+    <release version="26.04.0" date="2026-04-16"/>
+    <release version="25.12.3" date="2026-03-05"/>
+    <release version="25.12.2" date="2026-02-05"/>
+    <release version="25.12.1" date="2026-01-08"/>
+    <release version="25.12.0" date="2025-12-11"/>
+    <release version="25.08.3" date="2025-11-06"/>
+    <release version="25.08.2" date="2025-10-09"/>
+    <release version="25.08.1" date="2025-09-11"/>
+    <release version="25.08.0" date="2025-08-14"/>
+    <release version="25.04.3" date="2025-07-03"/>
+    <release version="25.04.2" date="2025-06-05"/>
+    <release version="25.04.1" date="2025-05-08"/>
+    <release version="25.04.0" date="2025-04-17"/>
+    <release version="24.12.3" date="2025-03-06"/>
+    <release version="24.12.2" date="2025-02-06"/>
+    <release version="24.12.1" date="2025-01-09"/>
+    <release version="24.12.0" date="2024-12-12"/>
+    <release version="24.08.3" date="2024-11-07"/>
+    <release version="24.08.2" date="2024-10-10"/>
+    <release version="24.08.1" date="2024-09-12"/>
+    <release version="24.08.0" date="2024-08-22"/>
+    <release version="24.05.2" date="2024-07-04"/>
+    <release version="24.05.1" date="2024-06-13"/>
+    <release version="24.05.0" date="2024-05-23"/>
+    <release version="24.02.2" date="2024-04-11"/>
+    <release version="24.02.1" date="2024-03-21"/>
+    <release version="24.02.0" date="2024-02-28"/>
+    <release version="23.08.5" date="2024-02-15"/>
+  </releases>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <launchable type="desktop-id">org.kde.arianna.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+  <branding>
+    <color type="primary" scheme_preference="light">#feb978</color>
+    <color type="primary" scheme_preference="dark">#714903</color>
+  </branding>
+</component>

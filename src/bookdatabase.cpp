@@ -66,6 +66,7 @@ public:
                 qCDebug(ARIANNA_LOG) << Q_FUNC_INFO << ": opening database with following fieldNames:" << fieldNames;
             }
             ensureColumn(QStringLiteral("zoomLevel"), QStringLiteral("zoomLevel real default 1.0"));
+            ensureColumn(QStringLiteral("uniqueIdentifier"), QStringLiteral("uniqueIdentifier varchar"));
             return true;
         }
 
@@ -97,6 +98,7 @@ public:
                    << QStringLiteral("rights varchar")
                    << QStringLiteral("source varchar")
                    << QStringLiteral("identifier varchar")
+                   << QStringLiteral("uniqueIdentifier varchar")
                    << QStringLiteral("language varchar");
         // clang-format on
 
@@ -148,6 +150,7 @@ public:
         entry.locations = query.value(fieldNames.indexOf(QStringLiteral("locations"))).toString();
         entry.language = query.value(fieldNames.indexOf(QStringLiteral("language"))).toString();
         entry.identifier = query.value(fieldNames.indexOf(QStringLiteral("identifier"))).toString();
+        entry.uniqueIdentifier = query.value(fieldNames.indexOf(QStringLiteral("uniqueIdentifier"))).toString();
         entry.rights = query.value(fieldNames.indexOf(QStringLiteral("rights"))).toString();
         entry.source = query.value(fieldNames.indexOf(QStringLiteral("source"))).toString();
         return entry;
@@ -195,12 +198,18 @@ std::optional<BookEntry> BookDatabase::loadEntry(const QString &fileName)
 
 std::optional<BookEntry> BookDatabase::loadEntryByIdentifier(const QString &identifier)
 {
+    return loadEntryByUniqueIdentifier(identifier);
+}
+
+std::optional<BookEntry> BookDatabase::loadEntryByUniqueIdentifier(const QString &uniqueIdentifier)
+{
     if (!d->prepareDb()) {
         return std::nullopt;
     }
     QSqlQuery entry;
-    entry.prepare(QStringLiteral("SELECT ") + d->fieldNames.join(QStringLiteral(", ")) + QStringLiteral(" FROM books WHERE identifier = :identifier LIMIT 1"));
-    entry.bindValue(QStringLiteral(":identifier"), identifier);
+    entry.prepare(QStringLiteral("SELECT ") + d->fieldNames.join(QStringLiteral(", "))
+                  + QStringLiteral(" FROM books WHERE uniqueIdentifier = :identifier OR identifier = :identifier LIMIT 1"));
+    entry.bindValue(QStringLiteral(":identifier"), uniqueIdentifier);
     if (entry.exec() && entry.first()) {
         return d->fromSqlQuery(entry);
     }
@@ -254,6 +263,7 @@ void BookDatabase::addEntry(const BookEntry &entry)
     newEntry.bindValue(QStringLiteral(":rights"), entry.rights);
     newEntry.bindValue(QStringLiteral(":source"), entry.source);
     newEntry.bindValue(QStringLiteral(":identifier"), entry.identifier);
+    newEntry.bindValue(QStringLiteral(":uniqueIdentifier"), entry.uniqueIdentifier);
     newEntry.bindValue(QStringLiteral(":language"), entry.language);
     newEntry.exec();
 

@@ -187,6 +187,12 @@ export const compare = (a, b) => {
 
 const isTextNode = ({ nodeType }) => nodeType === 3 || nodeType === 4
 const isElementNode = ({ nodeType }) => nodeType === 1
+const isNode = node => node && typeof node.nodeType === 'number'
+const isValidOffset = ({ node, offset, before, after }) => {
+    if (before || after || offset == null) return true
+    const length = isTextNode(node) ? node.nodeValue.length : node.childNodes.length
+    return Number.isInteger(offset) && offset >= 0 && offset <= length
+}
 
 const getChildNodes = (node, filter) => {
     const nodes = Array.from(node.childNodes)
@@ -296,6 +302,10 @@ export const toRange = (doc, parts, filter) => {
     const root = doc.documentElement
     const start = partsToNode(root, startParts[0], filter)
     const end = partsToNode(root, endParts[0], filter)
+
+    if (!isNode(start?.node) || !isNode(end?.node)
+    || !isValidOffset(start) || !isValidOffset(end))
+        throw new Error('CFI target no longer exists')
 
     const range = doc.createRange()
 

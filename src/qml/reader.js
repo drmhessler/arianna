@@ -474,8 +474,8 @@ class Reader {
         document.body.append(this.view)
         this.sectionFractions = this.view.getSectionFractions()
         await this.view.open(this.book)
-        await this.view.init({ lastLocation: this.initCfi })
         this.#handleEvents()
+        await this.view.init({ lastLocation: this.initCfi })
     }
     setAppearance({ style, layout, autohideCursor }) {
         Object.assign(this.style, style)
@@ -489,7 +489,7 @@ class Reader {
             $style.setProperty('--arianna-reader-background-image', style.readerBackgroundImage)
             $style.setProperty('--arianna-reader-background-filter', style.readerBackgroundFilter ?? 'none')
         } else {
-            $style.removeProperty('--arianna-reader-background-image')
+            $style.setProperty('--arianna-reader-background-image', 'none')
             $style.removeProperty('--arianna-reader-background-filter')
         }
         const renderer = this.view?.renderer
@@ -498,7 +498,7 @@ class Reader {
                 renderer.style.setProperty('--arianna-reader-background-image', style.readerBackgroundImage)
                 renderer.style.setProperty('--arianna-reader-background-filter', style.readerBackgroundFilter ?? 'none')
             } else {
-                renderer.style.removeProperty('--arianna-reader-background-image')
+                renderer.style.setProperty('--arianna-reader-background-image', 'none')
                 renderer.style.removeProperty('--arianna-reader-background-filter')
             }
             renderer.setAttribute('flow', layout.flow)

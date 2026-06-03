@@ -9,6 +9,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QImage>
 #include <QMimeDatabase>
 #include <QStandardPaths>
@@ -21,6 +22,49 @@
 #include <QChar>
 #include <QLoggingCategory>
 #include <arianna_debug.h>
+
+static QString normalizeBookServerIdentifier(QString identifier)
+{
+    identifier = identifier.trimmed();
+
+    const QString uuidUrnPrefix = QStringLiteral("urn:uuid:");
+    if (identifier.startsWith(uuidUrnPrefix, Qt::CaseInsensitive)) {
+        identifier = identifier.mid(uuidUrnPrefix.size());
+    }
+
+    const QUuid uuid(identifier);
+    if (!uuid.isNull()) {
+        return uuid.toString(QUuid::WithoutBraces);
+    }
+
+    return identifier;
+}
+
+static void applyEpubIdentifiers(BookEntry &entry, EPubContainer &epub)
+{
+    const QStringList identifiers = epub.metadata(QStringLiteral("identifiers"));
+    entry.identifier = identifiers.join(QStringLiteral(", "));
+    entry.uniqueIdentifier = normalizeBookServerIdentifier(epub.metadata(QStringLiteral("unique-identifier")).value(0));
+    if (entry.uniqueIdentifier.isEmpty()) {
+        entry.uniqueIdentifier = normalizeBookServerIdentifier(identifiers.value(0));
+    }
+}
+
+static bool refreshEpubIdentifiers(BookEntry &entry)
+{
+    QMimeDatabase db;
+    if (db.mimeTypeForFile(entry.filename).name() != QStringLiteral("application/epub+zip")) {
+        return false;
+    }
+
+    EPubContainer epub(nullptr);
+    if (!epub.openFile(entry.filename)) {
+        return false;
+    }
+
+    applyEpubIdentifiers(entry, epub);
+    return !entry.uniqueIdentifier.isEmpty();
+}
 
 class BookListModel::Private
 {
@@ -131,7 +175,12 @@ public:
              * cache this would be a good place to start investigating.
              */
             if (QFileInfo::exists(entry.filename)) {
-                addEntry(q, entry);
+                BookEntry cachedEntry = entry;
+                if (cachedEntry.uniqueIdentifier.isEmpty() && refreshEpubIdentifiers(cachedEntry)) {
+                    BookDatabase::self().updateEntry(cachedEntry.filename, QStringLiteral("identifier"), cachedEntry.identifier);
+                    BookDatabase::self().updateEntry(cachedEntry.filename, QStringLiteral("uniqueIdentifier"), cachedEntry.uniqueIdentifier);
+                }
+                addEntry(q, cachedEntry);
                 if (++i % 100 == 0) {
                     Q_EMIT q->countChanged();
                     qApp->processEvents();
@@ -247,7 +296,7 @@ void BookListModel::contentModelItemsInserted(QModelIndex index, int first, int 
             entry.author = epub.metadata(QStringLiteral("creator"));
             entry.rights = epub.metadata(QStringLiteral("rights")).join(QStringLiteral(", "));
             entry.source = epub.metadata(QStringLiteral("source")).join(QStringLiteral(", "));
-            entry.identifier = epub.metadata(QStringLiteral("identifier")).join(QStringLiteral(", "));
+            applyEpubIdentifiers(entry, epub);
             entry.language = epub.metadata(QStringLiteral("language")).join(QStringLiteral(", "));
             entry.genres = epub.metadata(QStringLiteral("subject"));
             entry.publisher = epub.metadata(QStringLiteral("publisher")).join(QStringLiteral(", "));
@@ -357,15 +406,14 @@ void BookListModel::setBookData(const QString &fileName, const QString &property
 
 void BookListModel::removeBook(const QString &fileName, bool deleteFile)
 {
-    if (deleteFile) {
-        // KIO::DeleteJob *job = KIO::del(QUrl::fromLocalFile(fileName), KIO::HideProgressInfo);
-        // job->start();
-    }
-
     for (qsizetype i = 0; i < d->entries.size(); ++i) {
         const BookEntry entry = d->entries.at(i);
         if (entry.filename != fileName) {
             continue;
+        }
+
+        if (deleteFile && !QFile::remove(entry.filename)) {
+            qCWarning(ARIANNA_LOG) << "Could not delete book file" << entry.filename;
         }
 
         d->entries.removeAt(i);

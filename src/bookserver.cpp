@@ -26,14 +26,31 @@
 #include <QScopedPointer>
 #include <QSet>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QUrl>
 #include <qdeadlinetimer.h>
 #include <qdebug.h>
 #include <qdir.h>
 
+static QString discoveryFilePath()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + QStringLiteral("/arianna-bookserver.json");
+}
+
+static void removeDiscoveryFile()
+{
+    const QString path = discoveryFilePath();
+
+    if (QFile::exists(path)) {
+        QFile::remove(path);
+
+        qDebug() << "Removed BookServer discovery file:" << path;
+    }
+}
+
 static void writeDiscoveryFile(quint16 port, const QString &serverToken)
 {
-    const QString path = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + QStringLiteral("/arianna-bookserver.json");
+    const QString path = discoveryFilePath();
 
     QJsonObject obj;
     obj.insert(QStringLiteral("baseUrl"), QStringLiteral("http://127.0.0.1:%1").arg(port));
@@ -186,14 +203,14 @@ static void addCorsHeaders(const QHttpServerRequest &request, QHttpServerRespons
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     auto headers = response.headers();
     headers.replaceOrAppend("Access-Control-Allow-Origin", origin);
-    headers.replaceOrAppend("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    headers.replaceOrAppend("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     headers.replaceOrAppend("Access-Control-Allow-Headers", "X-Arianna-Session-Token, X-Arianna-Server-Token, Range, Content-Type");
     headers.replaceOrAppend("Access-Control-Expose-Headers", "Accept-Ranges, Content-Length, Content-Range");
     headers.replaceOrAppend("Vary", "Origin");
     response.setHeaders(headers);
 #else
     response.setHeader("Access-Control-Allow-Origin", origin);
-    response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     response.setHeader("Access-Control-Allow-Headers", "X-Arianna-Session-Token, X-Arianna-Server-Token, Range, Content-Type");
     response.setHeader("Access-Control-Expose-Headers", "Accept-Ranges, Content-Length, Content-Range");
     response.setHeader("Vary", "Origin");
@@ -204,6 +221,32 @@ static QHttpServerResponse corsPreflightResponse(const QHttpServerRequest &reque
 {
     Q_UNUSED(request)
     QHttpServerResponse response(QHttpServerResponder::StatusCode::NoContent);
+    return response;
+}
+
+static void addBookResponseHeaders(QHttpServerResponse &response, qint64 contentLength)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    auto headers = response.headers();
+    headers.replaceOrAppend("Content-Disposition", "inline; filename=\"book.epub\"");
+    if (contentLength >= 0) {
+        headers.replaceOrAppend("Content-Length", QByteArray::number(contentLength));
+    }
+    headers.replaceOrAppend("Cache-Control", "no-store");
+    response.setHeaders(headers);
+#else
+    response.setHeader("Content-Disposition", "inline; filename=\"book.epub\"");
+    if (contentLength >= 0) {
+        response.setHeader("Content-Length", QByteArray::number(contentLength));
+    }
+    response.setHeader("Cache-Control", "no-store");
+#endif
+}
+
+static QHttpServerResponse bookFileResponse(const QString &filename)
+{
+    QHttpServerResponse response = QHttpServerResponse::fromFile(filename);
+    addBookResponseHeaders(response, QFileInfo(filename).size());
     return response;
 }
 
@@ -221,9 +264,56 @@ void BookServer::clearServedResourcesForIdentifier(const QString &identifier)
     m_resourceMapByIdentifier.remove(identifier);
 }
 
+void BookServer::clearServedResourcesForSessionIdentifier(const QString &sessionToken, const QString &identifier)
+{
+    for (auto it = m_resourceByUuid.begin(); it != m_resourceByUuid.end();) {
+        const ServedResource &served = it.value();
+        if (served.identifier == identifier && served.sessionToken == sessionToken) {
+            it = m_resourceByUuid.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void BookServer::registerReaderSessionForIdentifier(const QString &sessionToken, const QString &identifier)
+{
+    if (sessionToken.isEmpty() || identifier.isEmpty() || !m_readerSessionRefCount.contains(sessionToken)) {
+        return;
+    }
+
+    m_identifiersByReaderSession[sessionToken].insert(identifier);
+    m_readerSessionsByIdentifier[identifier].insert(sessionToken);
+}
+
+void BookServer::releaseReaderSessionResources(const QString &sessionToken)
+{
+    const QSet<QString> identifiers = m_identifiersByReaderSession.take(sessionToken);
+
+    for (const QString &identifier : identifiers) {
+        clearServedResourcesForSessionIdentifier(sessionToken, identifier);
+
+        auto sessionsIt = m_readerSessionsByIdentifier.find(identifier);
+        if (sessionsIt == m_readerSessionsByIdentifier.end()) {
+            continue;
+        }
+
+        sessionsIt.value().remove(sessionToken);
+        if (!sessionsIt.value().isEmpty()) {
+            continue;
+        }
+
+        m_readerSessionsByIdentifier.erase(sessionsIt);
+        clearServedResourcesForIdentifier(identifier);
+        m_containerCache.remove(identifier);
+
+        qDebug() << "BookServer cache removed for inactive identifier:" << identifier;
+    }
+}
+
 std::shared_ptr<EPubContainer> BookServer::containerForIdentifier(const QString &identifier)
 {
-    auto entry = BookDatabase::self().loadEntryByIdentifier(identifier);
+    auto entry = BookDatabase::self().loadEntryByUniqueIdentifier(identifier);
 
     if (!entry) {
         qWarning() << "Kein BookEntry für Identifier:" << identifier;
@@ -283,14 +373,14 @@ static QString serverTokenFromRequest(const QHttpServerRequest &request)
     return request.query().queryItemValue(QStringLiteral("serverToken"));
 }
 
-BookServer::BookServer(const QString &serverToken)
+BookServer::BookServer(const QString &serverToken, bool quitWhenUnused)
     : m_serverToken(serverToken)
+    , m_quitWhenUnused(quitWhenUnused)
 {
     addSessionToken(m_serverToken);
 
     server.route(QStringLiteral("/static/background-image"), [](const QHttpServerRequest &request) {
         Q_UNUSED(request)
-        qDebug() << "background Image ";
         QString backgroundPath = Config::readerBackgroundPath();
         if (backgroundPath.isEmpty()) {
             return QHttpServerResponse{QHttpServerResponder::StatusCode::NotFound};
@@ -336,11 +426,37 @@ BookServer::BookServer(const QString &serverToken)
         }
 
         const QString sessionToken = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        addSessionToken(sessionToken);
+        registerReaderSession(sessionToken);
 
         QJsonObject obj;
         obj.insert(QStringLiteral("sessionToken"), sessionToken);
         obj.insert(QStringLiteral("headerName"), QStringLiteral("X-Arianna-Session-Token"));
+        obj.insert(QStringLiteral("registeredReaders"), registeredReaderCount());
+
+        return QHttpServerResponse(QByteArrayLiteral("application/json"), QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    });
+
+    server.route(QStringLiteral("/session"), QHttpServerRequest::Method::Delete, [this](const QHttpServerRequest &request) {
+        const QString sessionToken = requestToken(request);
+
+        if (!isValidToken(sessionToken)) {
+            return QHttpServerResponse{QHttpServerResponder::StatusCode::Unauthorized};
+        }
+
+        if (!unregisterReaderSession(sessionToken)) {
+            return QHttpServerResponse{QHttpServerResponder::StatusCode::NotFound};
+        }
+
+        const int remainingReaders = registeredReaderCount();
+        const bool serverStopping = remainingReaders == 0;
+
+        QJsonObject obj;
+        obj.insert(QStringLiteral("registeredReaders"), remainingReaders);
+        obj.insert(QStringLiteral("serverStopping"), serverStopping);
+
+        if (serverStopping) {
+            scheduleStopIfUnused();
+        }
 
         return QHttpServerResponse(QByteArrayLiteral("application/json"), QJsonDocument(obj).toJson(QJsonDocument::Compact));
     });
@@ -351,63 +467,6 @@ BookServer::BookServer(const QString &serverToken)
                      return corsPreflightResponse(request);
                  });
 
-    server.route(QStringLiteral("/book"), QHttpServerRequest::Method::Options, [](const QHttpServerRequest &request) {
-        return corsPreflightResponse(request);
-    });
-
-    server.route(QStringLiteral("/book"), [this](const QHttpServerRequest &request) {
-        qDebug() << "Request for direct book URL:" << request.url() << "request token" << requestToken(request);
-        const QString token = requestToken(request);
-
-        if (!isValidToken(token)) {
-            return QHttpServerResponse{QHttpServerResponder::StatusCode::Unauthorized};
-        }
-
-        const QString bookUrl = QUrl::fromPercentEncoding(request.query().queryItemValue(QStringLiteral("url")).toUtf8());
-        QUrl parsedBookUrl = QUrl::fromUserInput(bookUrl);
-        if (!parsedBookUrl.isLocalFile() && bookUrl.startsWith(QStringLiteral("file://"))) {
-            parsedBookUrl = QUrl::fromEncoded(bookUrl.toUtf8());
-        }
-
-        QString filename = parsedBookUrl.isLocalFile() ? parsedBookUrl.toLocalFile() : bookUrl;
-        if (filename.startsWith(QStringLiteral("file://"))) {
-            filename = filename.mid(7);
-        }
-
-        qDebug() << "Resolved direct book path:" << filename;
-
-        if (filename.isEmpty() || !QFileInfo::exists(filename)) {
-            return QHttpServerResponse{QHttpServerResponder::StatusCode::NotFound};
-        }
-
-        auto container = std::make_shared<EPubContainer>(nullptr);
-
-        if (!container->openFile(filename)) {
-            return QHttpServerResponse{QHttpServerResponder::StatusCode::NotFound};
-        }
-
-        const QByteArray data = container->createServerReadyEpub({});
-
-        if (data.isEmpty()) {
-            return QHttpServerResponse{QHttpServerResponder::StatusCode::InternalServerError};
-        }
-
-        QHttpServerResponse response(QByteArrayLiteral("application/epub+zip"), data);
-#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
-        auto headers = response.headers();
-        headers.append("Content-Disposition", "inline; filename=\"book.epub\"");
-        headers.append("Content-Length", QByteArray::number(data.size()));
-        headers.append("Cache-Control", "no-store");
-        response.setHeaders(headers);
-#else
-        response.setHeader("Content-Disposition", "inline; filename=\"book.epub\"");
-        response.setHeader("Content-Length", QByteArray::number(data.size()));
-        response.setHeader("Cache-Control", "no-store");
-#endif
-
-        return response;
-    });
-
     server.route(QStringLiteral("/<arg>/book.epub"), [this](const QString &identifier, const QHttpServerRequest &request) {
         qDebug() << "Request for book URL:" << request.url() << "request token" << requestToken(request);
         const QString token = requestToken(request);
@@ -416,14 +475,31 @@ BookServer::BookServer(const QString &serverToken)
             return QHttpServerResponse{QHttpServerResponder::StatusCode::Unauthorized};
         }
 
+        const bool readerSessionToken = m_readerSessionRefCount.contains(token);
+        const QString resourceSessionToken = readerSessionToken ? token : QString();
+        if (readerSessionToken) {
+            registerReaderSessionForIdentifier(token, identifier);
+        }
+
         auto container = containerForIdentifier(identifier);
         if (!container) {
             return QHttpServerResponse{QHttpServerResponder::StatusCode::NotFound};
         }
         const QSet<QString> servedFiles = makeServedFiles(container);
-        m_servedFilesByIdentifier[identifier] = servedFiles;
+        if (readerSessionToken) {
+            clearServedResourcesForSessionIdentifier(token, identifier);
+        } else {
+            clearServedResourcesForIdentifier(identifier);
+        }
 
-        const ResourceMap resourceMap = makeResourceMap(servedFiles, identifier);
+        if (servedFiles.isEmpty()) {
+            m_containerCache.remove(identifier);
+            qDebug() << "Serving original EPUB directly:" << container->filename();
+            return bookFileResponse(container->filename());
+        }
+
+        m_servedFilesByIdentifier[identifier] = servedFiles;
+        const ResourceMap resourceMap = makeResourceMap(servedFiles, identifier, resourceSessionToken);
         const QByteArray data = container->createServerReadyEpub(resourceMap);
 
         qDebug() << "Served files map for identifier:" << identifier << resourceMap;
@@ -432,21 +508,7 @@ BookServer::BookServer(const QString &serverToken)
         }
 
         QHttpServerResponse response(QByteArrayLiteral("application/epub+zip"), data);
-        // qDebug() << "Serving file directly:" << container->filename();
-        // QHttpServerResponse response = QHttpServerResponse::fromFile(container->filename());
-#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
-        auto headers = response.headers();
-        // headers.append("Access-Control-Allow-Origin", "*");
-        headers.append("Content-Disposition", "inline; filename=\"book.epub\"");
-        headers.append("Content-Length", QByteArray::number(data.size()));
-        headers.append("Cache-Control", "no-store");
-        response.setHeaders(headers);
-#else
-      // response.setHeader("Access-Control-Allow-Origin", "*");
-    response.setHeader("Content-Disposition", "inline; filename=\"book.epub\"");
-    response.setHeader("Content-Length", QByteArray::number(data.size()));
-    response.setHeader("Cache-Control", "no-store");
-#endif
+        addBookResponseHeaders(response, data.size());
 
         return response;
     });
@@ -473,6 +535,10 @@ BookServer::BookServer(const QString &serverToken)
         const ServedResource served = m_resourceByUuid.value(resourceUuid);
 
         if (served.identifier != identifier) {
+            return QHttpServerResponse{QHttpServerResponder::StatusCode::Forbidden};
+        }
+
+        if (!served.sessionToken.isEmpty() && served.sessionToken != token) {
             return QHttpServerResponse{QHttpServerResponder::StatusCode::Forbidden};
         }
 
@@ -575,7 +641,7 @@ if (partial) {
 #else
     server.afterRequest([](QHttpServerResponse &&resp) {
         resp.setHeader("Access-Control-Allow-Origin", "*");
-        resp.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        resp.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
         resp.setHeader("Access-Control-Allow-Headers", "X-Arianna-Session-Token, X-Arianna-Server-Token, Range, Content-Type");
         resp.setHeader("Access-Control-Expose-Headers", "Accept-Ranges, Content-Length, Content-Range");
         return std::move(resp);
@@ -617,6 +683,34 @@ bool BookServer::isRunning() const
     return m_running;
 }
 
+void BookServer::stop()
+{
+    if (!m_running) {
+        return;
+    }
+
+    const auto tcpServers = server.servers();
+    for (QTcpServer *tcpServer : tcpServers) {
+        if (tcpServer) {
+            tcpServer->close();
+        }
+    }
+
+    m_validTokens.clear();
+    m_readerSessionRefCount.clear();
+    m_identifiersByReaderSession.clear();
+    m_readerSessionsByIdentifier.clear();
+    m_resourceByUuid.clear();
+    m_servedFilesByIdentifier.clear();
+    m_resourceMapByIdentifier.clear();
+    m_containerCache.clear();
+    m_running = false;
+
+    removeDiscoveryFile();
+
+    qWarning() << "BookServer stopped";
+}
+
 void BookServer::addSessionToken(const QString &token)
 {
     if (token.isEmpty()) {
@@ -630,9 +724,84 @@ void BookServer::addSessionToken(const QString &token)
 
 void BookServer::removeToken(const QString &token)
 {
+    releaseReaderSessionResources(token);
+    m_readerSessionRefCount.remove(token);
     m_validTokens.remove(token);
 
     qDebug() << "BookServer token removed:" << token;
+}
+
+void BookServer::registerReaderSession(const QString &token)
+{
+    if (token.isEmpty()) {
+        return;
+    }
+
+    addSessionToken(token);
+    m_readerSessionRefCount[token] = m_readerSessionRefCount.value(token) + 1;
+
+    qDebug() << "BookServer reader registered:" << token << "registered readers:" << registeredReaderCount();
+}
+
+bool BookServer::unregisterReaderSession(const QString &token)
+{
+    auto it = m_readerSessionRefCount.find(token);
+    if (it == m_readerSessionRefCount.end()) {
+        qDebug() << "BookServer reader session not registered:" << token;
+        return false;
+    }
+
+    --it.value();
+    if (it.value() <= 0) {
+        m_readerSessionRefCount.erase(it);
+        m_validTokens.remove(token);
+        releaseReaderSessionResources(token);
+    }
+
+    qDebug() << "BookServer reader unregistered:" << token << "registered readers:" << registeredReaderCount();
+    return true;
+}
+
+bool BookServer::hasRegisteredReaders() const
+{
+    return registeredReaderCount() > 0;
+}
+
+int BookServer::registeredReaderCount() const
+{
+    int count = 0;
+    for (auto it = m_readerSessionRefCount.constBegin(); it != m_readerSessionRefCount.constEnd(); ++it) {
+        count += it.value();
+    }
+
+    return count;
+}
+
+void BookServer::scheduleStopIfUnused()
+{
+    if (hasRegisteredReaders() || m_stopScheduled) {
+        return;
+    }
+
+    auto *app = QCoreApplication::instance();
+    if (!app) {
+        stop();
+        return;
+    }
+
+    m_stopScheduled = true;
+    QTimer::singleShot(100, app, [this] {
+        m_stopScheduled = false;
+        if (hasRegisteredReaders()) {
+            return;
+        }
+
+        stop();
+
+        if (m_quitWhenUnused) {
+            QCoreApplication::quit();
+        }
+    });
 }
 
 bool BookServer::isValidToken(const QString &token) const
@@ -649,7 +818,7 @@ bool BookServer::isValidToken(const QString &token) const
     return false;
 }
 
-ResourceMap BookServer::makeResourceMap(const QSet<QString> &servedFiles, const QString &identifier)
+ResourceMap BookServer::makeResourceMap(const QSet<QString> &servedFiles, const QString &identifier, const QString &sessionToken)
 {
     ResourceMap map;
 
@@ -658,7 +827,7 @@ ResourceMap BookServer::makeResourceMap(const QSet<QString> &servedFiles, const 
 
         const QString resourceUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
-        m_resourceByUuid.insert(resourceUuid, ServedResource{identifier, cleanPath});
+        m_resourceByUuid.insert(resourceUuid, ServedResource{identifier, cleanPath, sessionToken});
 
         map.insert(cleanPath, makeResourceUrl(identifier, resourceUuid));
     }
@@ -668,15 +837,5 @@ ResourceMap BookServer::makeResourceMap(const QSet<QString> &servedFiles, const 
 
 BookServer::~BookServer()
 {
-    if (!m_running) {
-        return;
-    }
-
-    const QString path = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + QStringLiteral("/arianna-bookserver.json");
-
-    if (QFile::exists(path)) {
-        QFile::remove(path);
-
-        qDebug() << "Removed BookServer discovery file:" << path;
-    }
+    stop();
 }

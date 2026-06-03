@@ -169,26 +169,18 @@ FormCard.FormCardPage {
     }
 
     FormCard.FormCard {
-        FormCard.FormSwitchDelegate {
-            id: invertColors
-            text: i18n("Invert colors")
-
-            checked: Config.invert
-            onCheckedChanged: {
-                Config.invert = checked
-                Config.save();
-            }
-        }
-
-        FormCard.FormDelegateSeparator {}
-
-        FormCard.FormSwitchDelegate {
-            id: kdeTheming
-            text: i18n("KDE Theming")
-
-            checked: Config.kdeTheming
-            onCheckedChanged: {
-                Config.kdeTheming = checked
+        FormCard.FormComboBoxDelegate {
+            text: i18nc("@label:listbox", "Reader theme")
+            textRole: "display"
+            valueRole: "value"
+            model: [
+                { display: i18nc("@action:inmenu Reader color theme", "Normal"), value: 0 },
+                { display: i18nc("@action:inmenu Reader color theme", "Inverted"), value: 1 },
+                { display: i18nc("@action:inmenu Reader color theme", "System"), value: 2 }
+            ]
+            currentIndex: Config.readerTheme
+            onActivated: index => {
+                Config.readerTheme = model[index].value;
                 Config.save();
             }
         }
@@ -302,6 +294,56 @@ FormCard.FormCardPage {
         }
     }
 
+    FormCard.FormHeader {
+        title: i18n("Editor")
+    }
+
+    FormCard.FormCard {
+        FormCard.FormTextFieldDelegate {
+            label: i18n("Editor executable")
+            text: Config.editorPath
+            placeholderText: i18n("No editor configured")
+            onEditingFinished: {
+                Config.editorPath = text.trim();
+                Config.save();
+            }
+        }
+
+        FormCard.FormDelegateSeparator {}
+
+        FormCard.FormButtonDelegate {
+            text: i18n("Choose editor…")
+            icon.name: "document-open"
+            onClicked: editorDialog.open()
+        }
+
+        FormCard.FormDelegateSeparator {}
+
+        FormCard.FormButtonDelegate {
+            text: i18n("Clear editor")
+            icon.name: "edit-clear"
+            enabled: Config.editorPath.length > 0
+            onClicked: {
+                Config.editorPath = "";
+                Config.save();
+            }
+        }
+    }
+
+    Dialogs.FileDialog {
+        id: editorDialog
+
+        title: i18n("Choose editor")
+        fileMode: Dialogs.FileDialog.OpenFile
+        onAccepted: {
+            const selectedPath = root.localPathFromUrl(selectedFile);
+            if (selectedPath.length > 0) {
+                Config.editorPath = selectedPath;
+                Config.save();
+            }
+        }
+    }
+
     FormCard.FormCard {
         Layout.topMargin: Kirigami.Units.largeSpacing
 
@@ -332,5 +374,13 @@ FormCard.FormCardPage {
             Config.save();
         }
         onRejected: fontDialog.currentFont = Config.defaultFont;
+    }
+
+    function localPathFromUrl(url) {
+        const value = url.toString();
+        if (value.startsWith("file://")) {
+            return decodeURIComponent(value.replace("file://", ""));
+        }
+        return value;
     }
 }

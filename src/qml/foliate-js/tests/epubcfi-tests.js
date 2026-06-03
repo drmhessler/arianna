@@ -152,6 +152,24 @@ const XHTML = str => parser.parseFromString(str, 'application/xhtml+xml')
 }
 
 {
+    const page = XHTML('<html xmlns="http://www.w3.org/1999/xhtml">'
+        + '<head></head><body id="body01"><p>abc</p></body></html>')
+
+    for (const cfi of [
+        '/4[body01]/6/1:0',
+        '/4[body01]/2/1:99',
+    ]) {
+        let threw = false
+        try {
+            CFI.toRange(page, CFI.parse(cfi))
+        } catch (e) {
+            threw = e.message === 'CFI target no longer exists'
+        }
+        console.assert(threw, `expected stale CFI ${cfi} to throw`)
+    }
+}
+
+{
     // special characters in ID assertions
     const opf = XML(`<?xml version="1.0"?>
 <package version="2.0" 

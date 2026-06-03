@@ -43,6 +43,15 @@ SPDX-License-Identifier: CC0-1.0
       <label>KDE Theming</label>
       <default>true</default>
     </entry>
+    <entry name="readerTheme" type="Enum">
+      <label>Reader theme</label>
+      <choices>
+        <choice name="Normal" />
+        <choice name="Inverse" />
+        <choice name="System" />
+      </choices>
+      <default>System</default>
+    </entry>
     <entry name="readerBackgroundPath" type="String">
       <label>Reader background image path</label>
       <default></default>
@@ -98,6 +107,12 @@ SPDX-License-Identifier: CC0-1.0
     <entry name="targetLanguage" type="String">
       <label>Translation target language</label>
       <default>DE</default>
+    </entry>
+  </group>
+  <group name="Editor">
+    <entry name="editorPath" type="String">
+      <label>External editor path</label>
+      <default></default>
     </entry>
   </group>
 </kcfg>

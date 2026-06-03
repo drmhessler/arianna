@@ -22,6 +22,36 @@ Kirigami.ScrollablePage {
     readonly property int totalBookCount: applicationWindow().bookListModel ? applicationWindow().bookListModel.count : 0
 
     title: showBookCount ? i18nc("@title:window, %1 is the page title and %2 is the number of books", "%1 (%2)", pageTitle, totalBookCount) : pageTitle
+
+    function canEditBook(fileName) {
+        return Config.editorPath.trim().length > 0 && fileName && fileName.length > 0;
+    }
+
+    function editBook(fileName) {
+        if (!canEditBook(fileName)) {
+            return;
+        }
+
+        EditorProcess.start(Config.editorPath.trim(), [fileName]);
+    }
+
+    function confirmRemoveBook(fileName) {
+        if (!fileName || fileName.length === 0) {
+            return;
+        }
+
+        removeBookDialog.openForBook(fileName);
+    }
+
+    function escapeHtml(text) {
+        return String(text)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
     actions: [
         Kirigami.Action {
             text: i18nc("@action:button", "Sort")
@@ -32,6 +62,15 @@ Kirigami.ScrollablePage {
                 checked: sortProxy.sortRoleName === "title"
                 onTriggered: {
                     sortProxy.sortRoleName = "title";
+                    sortProxy.sortOrder = Qt.AscendingOrder;
+                }
+            }
+            Kirigami.Action {
+                text: i18nc("@action:inmenu Sort books by author", "Author")
+                checkable: true
+                checked: sortProxy.sortRoleName === "authorSort"
+                onTriggered: {
+                    sortProxy.sortRoleName = "authorSort";
                     sortProxy.sortOrder = Qt.AscendingOrder;
                 }
             }
@@ -63,6 +102,64 @@ Kirigami.ScrollablePage {
         sortRoleName: "lastOpenedTime"
         sortOrder: Qt.DescendingOrder
         dynamicSortFilter: true
+    }
+
+    QQC2.Dialog {
+        id: removeBookDialog
+
+        property string bookFileName: ""
+        property string location: ""
+
+        parent: QQC2.Overlay.overlay
+        modal: true
+        title: i18nc("@title:window", "Remove Book")
+        standardButtons: QQC2.Dialog.Ok | QQC2.Dialog.Cancel
+
+        function openForBook(fileName) {
+            bookFileName = fileName;
+            location = fileName;
+            deleteFileCheckBox.checked = false;
+            open();
+        }
+
+        onAccepted: {
+            applicationWindow().bookListModel.removeBook(bookFileName, deleteFileCheckBox.checked);
+            bookFileName = "";
+            location = "";
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Kirigami.Units.largeSpacing
+
+            QQC2.Label {
+                Layout.fillWidth: true
+                text: i18nc("@info", "Do you really want to remove the book from the library? All saved data such as progress and annotations will be lost.")
+                wrapMode: Text.Wrap
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+
+                QQC2.CheckBox {
+                    id: deleteFileCheckBox
+
+                    Layout.alignment: Qt.AlignTop
+                    checked: false
+                }
+
+                QQC2.Label {
+                    Layout.fillWidth: true
+                    text: i18nc("@option:check %1 is the book file location", "Also delete the book from the location:<br><b>%1</b><br>Delete it.", root.escapeHtml(removeBookDialog.location))
+                    textFormat: Text.RichText
+                    wrapMode: Text.WrapAnywhere
+
+                    TapHandler {
+                        onTapped: deleteFileCheckBox.checked = !deleteFileCheckBox.checked
+                    }
+                }
+            }
+        }
     }
 
     GridView {
@@ -161,7 +258,8 @@ Kirigami.ScrollablePage {
                     QQC2.ToolTip.text: text
                     QQC2.ToolTip.visible: hovered
                     QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
-                    onClicked: EditorProcess.start('/usr/local/bin/ebook-edit-check', [bookDelegate.filename])
+                    enabled: root.canEditBook(bookDelegate.filename)
+                    onClicked: root.editBook(bookDelegate.filename)
                 }
 
                 QQC2.ToolButton {
@@ -173,7 +271,7 @@ Kirigami.ScrollablePage {
                     QQC2.ToolTip.text: text
                     QQC2.ToolTip.visible: hovered
                     QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
-                    onClicked: applicationWindow().bookListModel.removeBook(bookDelegate.filename)
+                    onClicked: root.confirmRemoveBook(bookDelegate.filename)
                 }
             }
 
@@ -206,15 +304,15 @@ Kirigami.ScrollablePage {
             QQC2.Action {
                 icon.name: 'document-edit'
                 text: i18nc("@action:inmenu", "Edit Book")
-                enabled: menu.isBook
-                onTriggered: EditorProcess.start('/usr/local/bin/ebook-edit-check', [menu.filename])
+                enabled: menu.isBook && root.canEditBook(menu.filename)
+                onTriggered: root.editBook(menu.filename)
             }
 
             QQC2.Action {
                 icon.name: 'edit-delete-remove'
                 text: i18nc("@action:inmenu", "Remove from Library")
                 enabled: menu.isBook
-                onTriggered: applicationWindow().bookListModel.removeBook(menu.filename)
+                onTriggered: root.confirmRemoveBook(menu.filename)
             }
         }
 

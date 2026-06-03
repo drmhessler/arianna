@@ -81,7 +81,6 @@ void Translator::translate(const QString &sourceText)
 
 void Translator::handleNetworkReply(QNetworkReply *reply)
 {
-    qDebug() << "Received network reply for translation request";
     if (reply->error() == QNetworkReply::NoError) {
         QByteArray response = reply->readAll();
         QJsonDocument jsonDoc = QJsonDocument::fromJson(response);

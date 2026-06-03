@@ -140,6 +140,21 @@ msgstr "Herausgeber:"
 msgid "Language:"
 msgstr "Sprache:"
 
+#: qml/BookDetailsPage.qml:100
+#, kde-format
+msgid "Location:"
+msgstr "Standort:"
+
+#: qml/BookDetailsPage.qml:122
+#, kde-format
+msgid "Unique identifier:"
+msgstr "Eindeutige Kennung:"
+
+#: qml/BookDetailsPage.qml:133
+#, kde-format
+msgid "Further identifiers:"
+msgstr "Weitere Kennungen:"
+
 #: qml/BookDetailsPage.qml:74
 #, kde-format
 msgid "Publishing date:"
@@ -208,6 +223,62 @@ msgstr "Kopieren"
 msgid "Find"
 msgstr "Suchen"
 
+#: qml/SettingsPage.qml:173
+#, kde-format
+msgctxt "@label:listbox"
+msgid "Reader theme"
+msgstr "Lesethema"
+
+#: qml/EpubViewerPage.qml:205
+#, kde-format
+msgctxt "@action:intoolbar"
+msgid "Reader theme"
+msgstr "Lesethema"
+
+#: qml/EpubViewerPage.qml:205
+#, kde-format
+msgctxt "@action:intoolbar"
+msgid "Edit Book"
+msgstr "Buch bearbeiten"
+
+#: qml/EpubViewerPage.qml:211
+#, kde-format
+msgctxt "@action:inmenu Reader color theme"
+msgid "Normal"
+msgstr "Normal"
+
+#: qml/EpubViewerPage.qml:218
+#, kde-format
+msgctxt "@action:inmenu Reader color theme"
+msgid "Inverted"
+msgstr "Invers"
+
+#: qml/EpubViewerPage.qml:225
+#, kde-format
+msgctxt "@action:inmenu Reader color theme"
+msgid "System"
+msgstr "System"
+
+#: qml/EpubViewerPage.qml:449
+#, kde-format
+msgid "Search with Google"
+msgstr "Mit Google Suchen"
+
+#: qml/EpubViewerPage.qml:468
+#, kde-format
+msgid "Edit at Text"
+msgstr "Editieren am Text"
+
+#: qml/EpubViewerPage.qml:359
+#, kde-format
+msgid "Translate"
+msgstr "Übersetzen"
+
+#, kde-format
+msgctxt "@title:window"
+msgid "Translation"
+msgstr "Übersetzung"
+
 #: qml/EpubViewerPage.qml:268
 #, kde-format
 msgctxt "Book reading progress"
@@ -224,6 +295,11 @@ msgstr "Verbleibende Zeit im Kapitel:"
 msgid "Time left in book:"
 msgstr "Verbleibende Zeit im Buch:"
 
+#: qml/EpubViewerPage.qml:584
+#, kde-format
+msgid "Back"
+msgstr "Zurück"
+
 #: qml/EpubViewerPage.qml:303
 #, kde-format
 msgid "Previous Page"
@@ -233,6 +309,11 @@ msgstr "Vorherige Seite"
 #, kde-format
 msgid "Next Page"
 msgstr "Nächste Seite"
+
+#: qml/EpubViewerPage.qml:622
+#, kde-format
+msgid "Forward"
+msgstr "Vor"
 
 #: qml/EpubViewerPage.qml:364
 #, kde-format
@@ -315,13 +396,82 @@ msgstr "Neu"
 msgid "Library"
 msgstr "Bibliothek"
 
+#: qml/LibraryPage.qml:24
+#, kde-format
+msgctxt "@action:button"
+msgid "Sort"
+msgstr "Sortieren"
+
+#: qml/LibraryPage.qml:27
+#, kde-format
+msgctxt "@action:inmenu Sort books by title"
+msgid "Title"
+msgstr "Titel"
+
+#: qml/LibraryPage.qml:36
+#, kde-format
+msgctxt "@action:inmenu Sort books by author"
+msgid "Author"
+msgstr "Autor"
+
+#: qml/LibraryPage.qml:45
+#, kde-format
+msgctxt "@action:inmenu Sort books by last access"
+msgid "Last Access"
+msgstr "Letzter Zugriff"
+
 #: qml/LibraryPage.qml:98
+#, kde-format
+msgctxt "@action:button"
+msgid "Book Details"
+msgstr "Buchdetails"
+
+#: qml/LibraryPage.qml:112
+#, kde-format
+msgctxt "@action:button"
+msgid "Edit Book"
+msgstr "Buch bearbeiten"
+
+#: qml/LibraryPage.qml:124
+#, kde-format
+msgctxt "@action:button"
+msgid "Remove from Library"
+msgstr "Aus Bibliothek entfernen"
+
+#: qml/LibraryPage.qml:152
 #, kde-format
 msgctxt "@action:inmenu"
 msgid "Book Details"
 msgstr "Buchdetails"
 
-#: qml/LibraryPage.qml:110
+#: qml/LibraryPage.qml:160
+#, kde-format
+msgctxt "@action:inmenu"
+msgid "Edit Book"
+msgstr "Buch bearbeiten"
+
+#: qml/LibraryPage.qml:167
+#, kde-format
+msgctxt "@action:inmenu"
+msgid "Remove from Library"
+msgstr "Aus Bibliothek entfernen"
+
+#, kde-format
+msgctxt "@title:window"
+msgid "Remove Book"
+msgstr "Buch entfernen"
+
+#, kde-format
+msgctxt "@info"
+msgid "Do you really want to remove the book from the library? All saved data such as progress and annotations will be lost."
+msgstr "Buch wirklich aus der Bibliothek löschen? Alle gespeicherten Daten wie Fortschritt und Anmerkungen gehen dabei verloren."
+
+#, kde-format
+msgctxt "@option:check %1 is the book file location"
+msgid "Also delete the book from the location:<br><b>%1</b><br>Delete it."
+msgstr "Buch auch von dem Standort:<br><b>%1</b><br>löschen."
+
+#: qml/LibraryPage.qml:175
 #, kde-format
 msgctxt "@info placeholder"
 msgid "Add some books"
@@ -413,6 +563,9 @@ msgctxt "@action:button"
 msgid "Add Books…"
 msgstr "Bücher hinzufügen …"
 
+msgid "Add Books"
+msgstr "Bücher hinzufügen"
+
 #: qml/Main.qml:364
 #, kde-format
 msgid "Please choose files"
@@ -487,6 +640,36 @@ msgstr "Farben"
 #, kde-format
 msgid "Invert colors"
 msgstr "Farben umkehren"
+
+#: qml/SettingsPage.qml:299
+#, kde-format
+msgid "Editor"
+msgstr "Editor"
+
+#: qml/SettingsPage.qml:305
+#, kde-format
+msgid "Editor executable"
+msgstr "Editor-Programm"
+
+#: qml/SettingsPage.qml:307
+#, kde-format
+msgid "No editor configured"
+msgstr "Kein Editor eingerichtet"
+
+#: qml/SettingsPage.qml:318
+#, kde-format
+msgid "Choose editor…"
+msgstr "Editor auswählen …"
+
+#: qml/SettingsPage.qml:326
+#, kde-format
+msgid "Clear editor"
+msgstr "Editor zurücksetzen"
+
+#: qml/SettingsPage.qml:342
+#, kde-format
+msgid "Choose editor"
+msgstr "Editor auswählen"
 
 #: qml/SettingsPage.qml:177
 #, kde-format

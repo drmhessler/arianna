@@ -407,7 +407,11 @@ QByteArray EPubContainer::readData(const QString &path)
 
 QStringList EPubContainer::metadata(const QStringView &key)
 {
-    return m_metadata.value(key);
+    const QString keyString = key.toString();
+    if (keyString == QStringLiteral("identifier")) {
+        return m_metadata.value(QStringLiteral("identifiers"));
+    }
+    return m_metadata.value(keyString);
 }
 
 bool EPubContainer::parseMimetype()
@@ -487,12 +491,28 @@ bool EPubContainer::parseContentFile(const QString &filepath)
     document.setContent(ioDevice.data(), true); // turn on namespace processing
 #endif
 
+    const QString uniqueIdentifierId = document.documentElement().attribute(QStringLiteral("unique-identifier"));
+    QString uniqueIdentifier;
+
     QDomNodeList metadataNodeList = document.elementsByTagName(QStringLiteral("metadata"));
     for (int i = 0; i < metadataNodeList.count(); i++) {
         QDomNodeList metadataChildList = metadataNodeList.at(i).childNodes();
         for (int j = 0; j < metadataChildList.count(); j++) {
-            parseMetadataItem(metadataChildList.at(j), metadataChildList);
+            const QDomNode metadataNode = metadataChildList.at(j);
+            const QDomElement metadataElement = metadataNode.toElement();
+            if (!uniqueIdentifierId.isEmpty() && metadataElement.prefix() == QStringLiteral("dc") && metadataElement.tagName() == QStringLiteral("identifier")
+                && metadataElement.attribute(QStringLiteral("id")) == uniqueIdentifierId) {
+                uniqueIdentifier = metadataElement.text().trimmed();
+            }
+            parseMetadataItem(metadataNode, metadataChildList);
         }
+    }
+
+    if (uniqueIdentifier.isEmpty()) {
+        uniqueIdentifier = m_metadata.value(QStringLiteral("identifiers")).value(0);
+    }
+    if (!uniqueIdentifier.isEmpty()) {
+        m_metadata[QStringLiteral("unique-identifier")] = QStringList{uniqueIdentifier};
     }
 
     // Extract current path, for resolving relative paths
@@ -617,6 +637,11 @@ bool EPubContainer::parseMetadataItem(const QDomNode &metadataNode, const QDomNo
     } else {
         metaName = tagName;
         metaValue = metadataElement.text();
+    }
+
+    if (metaName == QStringLiteral("identifier")) {
+        metaName = QStringLiteral("identifiers");
+        metaValue = metaValue.trimmed();
     }
 
     if (metaName.isEmpty() || metaValue.isEmpty()) {

@@ -18,6 +18,18 @@ Kirigami.ApplicationWindow {
 
     title: i18n("Arianna")
 
+    function centerToolbarActionsFor(page) {
+        if (!page) {
+            return false;
+        }
+
+        try {
+            return page.centerToolbarActions === true;
+        } catch (error) {
+            return false;
+        }
+    }
+
     width: Kirigami.Units.gridUnit * 65
     height: Kirigami.Units.gridUnit * 45
     minimumWidth: Kirigami.Units.gridUnit * 20
@@ -29,6 +41,10 @@ Kirigami.ApplicationWindow {
             canContainHandles: true
             style: Kirigami.ApplicationHeaderStyle.ToolBar
             showNavigationButtons: applicationWindow().pageStack.currentIndex > 0 ? Kirigami.ApplicationHeaderStyle.ShowBackButton : 0
+            toolbarActionAlignment: {
+                const currentPage = root.pageStack.layers.depth > 1 ? root.pageStack.layers.currentItem : root.pageStack.currentItem;
+                return root.centerToolbarActionsFor(currentPage) ? Qt.AlignHCenter : Qt.AlignRight;
+            }
         }
         initialPage: LibraryPage {
             bookListModel: root.bookListModel
@@ -64,7 +80,7 @@ Kirigami.ApplicationWindow {
         modal: Kirigami.Settings.isMobile || (applicationWindow().width < Kirigami.Units.gridUnit * 50 && !collapsed) // Only modal when not collapsed, otherwise collapsed won't show.
         z: modal ? Math.round(position * 10000000) : 100
         drawerOpen: !Kirigami.Settings.isMobile && enabled
-        enabled: pageStack.currentItem && pageStack.currentItem.hideSidebar !== true && pageStack.layers.currentItem.hideSidebar !== true
+        enabled: pageStack.currentItem && pageStack.currentItem.hideSidebar !== true && (!pageStack.layers.currentItem || pageStack.layers.currentItem.hideSidebar !== true)
         onEnabledChanged: drawerOpen = !Kirigami.Settings.isMobile && enabled
         width: Kirigami.Units.gridUnit * 16
         Behavior on width {
@@ -79,7 +95,7 @@ Kirigami.ApplicationWindow {
         handleClosedIcon.source: modal ? null : "sidebar-expand-left"
         handleOpenIcon.source: modal ? null : "sidebar-collapse-left"
         handleVisible: modal
-        onModalChanged: if (!modal && pageStack.layers.currentItem.hideSidebar !== true) {
+        onModalChanged: if (!modal && (!pageStack.layers.currentItem || pageStack.layers.currentItem.hideSidebar !== true)) {
             drawerOpen = true;
         }
 

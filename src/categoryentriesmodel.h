@@ -37,6 +37,7 @@ struct BookEntry {
     Q_PROPERTY(QStringList tags MEMBER tags CONSTANT)
     Q_PROPERTY(QString locations MEMBER locations CONSTANT)
     Q_PROPERTY(QString identifier MEMBER identifier CONSTANT)
+    Q_PROPERTY(QString uniqueIdentifier MEMBER uniqueIdentifier CONSTANT)
     Q_PROPERTY(QString source MEMBER source CONSTANT)
     Q_PROPERTY(QString language MEMBER language CONSTANT)
     Q_PROPERTY(int rating MEMBER rating CONSTANT)
@@ -71,6 +72,7 @@ public:
     QStringList tags;
     QString locations;
     QString identifier;
+    QString uniqueIdentifier;
     QString source;
     QString language;
     int rating = 0;
@@ -117,6 +119,7 @@ public:
         SeriesNumbersRole, /// For getting a stringlist of numbers, which represent the sequence number the book has within each series.
         SeriesVolumesRole, /// For getting a stringlist of numbers, which represent the volume number the book has within a series. This is optional.
         AuthorRole, /// For getting a stringlist of all the authors.
+        AuthorSortRole, /// For getting the authors as a string suitable for sorting.
         PublisherRole, /// For getting a string with the publisher name.
         CreatedRole, /// For getting the creation date of the book as a QDateTime.
         LastOpenedTimeRole, /// For getting the last time the book was opened as a QDateTime.

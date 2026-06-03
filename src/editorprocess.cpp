@@ -10,13 +10,25 @@ EditorProcess::EditorProcess(QObject *parent)
     : QObject(parent)
     , process(new QProcess(this))
     , fileWatcher(new QFileSystemWatcher(this))
+    , editedFileChangedTimer(new QTimer(this))
 {
+    editedFileChangedTimer->setSingleShot(true);
+    editedFileChangedTimer->setInterval(500);
+
     connect(process, &QProcess::started, this, &EditorProcess::handleStarted);
     connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &EditorProcess::handleFinished);
     connect(process, &QProcess::errorOccurred, this, &EditorProcess::handleErrorOccurred);
     connect(process, &QProcess::readyReadStandardOutput, this, &EditorProcess::handleReadyRead);
     connect(fileWatcher, &QFileSystemWatcher::fileChanged, this, &EditorProcess::handleEditedFileChanged);
     connect(fileWatcher, &QFileSystemWatcher::directoryChanged, this, &EditorProcess::handleEditedDirectoryChanged);
+    connect(editedFileChangedTimer, &QTimer::timeout, this, [this] {
+        const QString file = pendingEditedFile;
+        pendingEditedFile.clear();
+
+        if (!file.isEmpty()) {
+            Q_EMIT editedFileChanged(file);
+        }
+    });
 }
 
 void EditorProcess::start(const QString &program, const QStringList &arguments)
@@ -25,11 +37,7 @@ void EditorProcess::start(const QString &program, const QStringList &arguments)
         return;
     }
 
-    watchedFilePath = arguments.first();
-    if (!watchedFilePath.isEmpty()) {
-        fileWatcher->addPath(watchedFilePath);
-        fileWatcher->addPath(QFileInfo(watchedFilePath).absolutePath());
-    }
+    watchFile(arguments.first());
 
     process->start(program, arguments);
 }
@@ -55,6 +63,23 @@ void EditorProcess::stop()
     }
 }
 
+void EditorProcess::clearWatchedFile()
+{
+    editedFileChangedTimer->stop();
+    pendingEditedFile.clear();
+    watchedFilePath.clear();
+    watchedFileLastModified = {};
+    watchedFileSize = -1;
+
+    if (!fileWatcher->files().isEmpty()) {
+        fileWatcher->removePaths(fileWatcher->files());
+    }
+
+    if (!fileWatcher->directories().isEmpty()) {
+        fileWatcher->removePaths(fileWatcher->directories());
+    }
+}
+
 QByteArray EditorProcess::readAllStandardOutput()
 {
     return process->readAllStandardOutput();
@@ -72,8 +97,6 @@ void EditorProcess::handleStarted()
 
 void EditorProcess::handleFinished(int exitCode, QProcess::ExitStatus exitStatus)
 {
-    fileWatcher->removePaths(fileWatcher->files());
-    fileWatcher->removePaths(fileWatcher->directories());
     Q_EMIT processFinished(exitCode, exitStatus);
 }
 
@@ -88,25 +111,89 @@ void EditorProcess::handleEditedFileChanged(const QString &file)
     if (QFile::exists(file) && !fileWatcher->files().contains(file)) {
         fileWatcher->addPath(file);
     }
-    Q_EMIT editedFileChanged(file);
+
+    if (QFileInfo(file).absoluteFilePath() != watchedFilePath) {
+        return;
+    }
+
+    updateWatchedFileState();
+    scheduleEditedFileChanged(file);
 }
 
 void EditorProcess::handleEditedDirectoryChanged(const QString &path)
 {
     Q_UNUSED(path)
 
-    if (QFile::exists(watchedFilePath)) {
-        if (!fileWatcher->files().contains(watchedFilePath)) {
-            fileWatcher->addPath(watchedFilePath);
-            qDebug() << "Re-added file to watcher:" << watchedFilePath;
-        }
-        Q_EMIT editedFileChanged(watchedFilePath);
+    if (watchedFilePath.isEmpty() || !QFile::exists(watchedFilePath)) {
+        return;
+    }
+
+    if (!fileWatcher->files().contains(watchedFilePath)) {
+        fileWatcher->addPath(watchedFilePath);
+        qDebug() << "Re-added file to watcher:" << watchedFilePath;
+    }
+
+    if (updateWatchedFileState()) {
+        scheduleEditedFileChanged(watchedFilePath);
     }
 }
 
 void EditorProcess::handleReadyRead()
 {
     Q_EMIT readyRead();
+}
+
+void EditorProcess::watchFile(const QString &filePath)
+{
+    const QFileInfo fileInfo(filePath);
+    const QString absoluteFilePath = fileInfo.absoluteFilePath();
+
+    if (absoluteFilePath.isEmpty()) {
+        return;
+    }
+
+    if (absoluteFilePath != watchedFilePath) {
+        clearWatchedFile();
+    }
+
+    watchedFilePath = absoluteFilePath;
+    updateWatchedFileState();
+
+    if (QFile::exists(watchedFilePath) && !fileWatcher->files().contains(watchedFilePath)) {
+        fileWatcher->addPath(watchedFilePath);
+    }
+
+    const QString directory = QFileInfo(watchedFilePath).absolutePath();
+    if (!directory.isEmpty() && !fileWatcher->directories().contains(directory)) {
+        fileWatcher->addPath(directory);
+    }
+}
+
+void EditorProcess::scheduleEditedFileChanged(const QString &filePath)
+{
+    pendingEditedFile = QFileInfo(filePath).absoluteFilePath();
+    editedFileChangedTimer->start();
+}
+
+bool EditorProcess::updateWatchedFileState()
+{
+    const QFileInfo fileInfo(watchedFilePath);
+
+    if (!fileInfo.exists()) {
+        const bool changed = watchedFileSize != -1 || watchedFileLastModified.isValid();
+        watchedFileSize = -1;
+        watchedFileLastModified = {};
+        return changed;
+    }
+
+    const QDateTime lastModified = fileInfo.lastModified();
+    const qint64 size = fileInfo.size();
+    const bool changed = watchedFileLastModified.isValid() && (watchedFileLastModified != lastModified || watchedFileSize != size);
+
+    watchedFileLastModified = lastModified;
+    watchedFileSize = size;
+
+    return changed;
 }
 
 #include "moc_editorprocess.cpp"

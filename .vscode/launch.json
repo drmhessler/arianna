@@ -1,0 +1,32 @@
+{
+    // Verwendet IntelliSense zum Ermitteln möglicher Attribute.
+    // Zeigen Sie auf vorhandene Attribute, um die zugehörigen Beschreibungen anzuzeigen.
+    // Weitere Informationen finden Sie unter https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Arianna (CMake)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${command:cmake.launchTargetPath}",
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "stopAtEntry": false,
+            "externalConsole": false,
+            "visualizerFile": "/home/markus/.config/Code/User/workspaceStorage/eb8b021d79631fc5f4ed871f97f2c9d8/tonka3000.qtvsctools/qt.natvis.xml"
+        },
+        {
+            "name": "Start installed Arianna",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/usr/bin/arianna",
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "stopAtEntry": false,
+            "externalConsole": false,
+            "visualizerFile": "/home/markus/.config/Code/User/workspaceStorage/eb8b021d79631fc5f4ed871f97f2c9d8/tonka3000.qtvsctools/qt.natvis.xml",
+            "preLaunchTask": "Arianna: install/strip"
+
+        }
+    ]
+} 

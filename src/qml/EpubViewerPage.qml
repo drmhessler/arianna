@@ -24,6 +24,8 @@ Kirigami.Page {
     property var entry: null
     readonly property color readerTheme: Kirigami.Theme.backgroundColor
     readonly property bool hideSidebar: true
+    readonly property bool centerToolbarActions: true
+    property int currentReaderTheme: Config.readerTheme
 
     property var layouts: {
         'auto': {
@@ -65,8 +67,43 @@ Kirigami.Page {
     signal bookReady(title: var)
     signal bookClosed
 
+    onCurrentReaderThemeChanged: backend.applyStyle()
+
+    function setReaderThemeMode(mode) {
+        if (currentReaderTheme === mode && Config.readerTheme === mode) {
+            return;
+        }
+
+        currentReaderTheme = mode;
+        Config.readerTheme = mode;
+        Config.save();
+    }
+
+    function cycleReaderThemeMode() {
+        setReaderThemeMode((currentReaderTheme + 1) % 3);
+    }
+
+    function bookServerIdentifier() {
+        return root.entry ? (root.entry.uniqueIdentifier || root.entry.identifier || "") : "";
+    }
+
+    function editBook(selectedText) {
+        const editorPath = Config.editorPath.trim();
+        if (editorPath.length === 0 || !root.filename) {
+            return;
+        }
+
+        const editorArguments = [root.filename];
+        if (selectedText && selectedText.length > 0) {
+            editorArguments.push("--select-text");
+            editorArguments.push(selectedText);
+        }
+        EditorProcess.start(editorPath, editorArguments);
+    }
+
     function reloadBook() {
-        if (!root.url || view.loading || !view.readerReady || !root.entry) {
+        const serverIdentifier = bookServerIdentifier();
+        if (!root.url || view.loading || !view.readerReady || !serverIdentifier) {
             return;
         }
         // HACK: renderTo and options are the value of layouts.auto, but referencing layouts.auto here crashes
@@ -77,7 +114,7 @@ Kirigami.Page {
             maxSpreadColumns: 2
         });
 
-        const bookUrl = root.entry && root.entry.identifier ? "http://127.0.0.1:45961/" + encodeURIComponent(root.entry.identifier) + "/book.epub" : "http://127.0.0.1:45961/book?url=" + encodeURIComponent(root.url);
+        const bookUrl = "http://127.0.0.1:45961/" + encodeURIComponent(serverIdentifier) + "/book.epub";
         const urlNormalized = JSON.stringify(bookUrl);
         console.info("opening book", urlNormalized, renderTo, options);
         const initLocation = reloadLocation ? reloadLocation : currentLocation;
@@ -109,12 +146,10 @@ Kirigami.Page {
 
     Connections {
         target: Config
-        function onInvertChanged() {
-            backend.applyStyle();
+        function onReaderThemeChanged() {
+            root.currentReaderTheme = Config.readerTheme;
         }
-        function onKdeThemingChanged() {
-            backend.applyStyle();
-        }
+
         function onReaderBackgroundPathChanged() {
             view.reload();
         }
@@ -176,12 +211,53 @@ Kirigami.Page {
         }
     }
 
+    QQC2.ActionGroup {
+        id: readerThemeActionGroup
+        exclusive: true
+    }
+
     actions: [
         Kirigami.Action {
             text: i18nc("@action:intoolbar", "Search")
             displayHint: Kirigami.DisplayHint.IconOnly
             icon.name: "system-search-symbolic"
             onTriggered: searchDialog.open()
+        },
+        Kirigami.Action {
+            text: i18nc("@action:intoolbar", "Reader theme")
+            displayHint: Kirigami.DisplayHint.IconOnly
+            icon.name: "preferences-desktop-theme"
+
+            Kirigami.Action {
+                text: i18nc("@action:inmenu Reader color theme", "Normal")
+                checkable: true
+                checked: root.currentReaderTheme === 0
+                QQC2.ActionGroup.group: readerThemeActionGroup
+                onTriggered: root.setReaderThemeMode(0)
+            }
+
+            Kirigami.Action {
+                text: i18nc("@action:inmenu Reader color theme", "Inverted")
+                checkable: true
+                checked: root.currentReaderTheme === 1
+                QQC2.ActionGroup.group: readerThemeActionGroup
+                onTriggered: root.setReaderThemeMode(1)
+            }
+
+            Kirigami.Action {
+                text: i18nc("@action:inmenu Reader color theme", "System")
+                checkable: true
+                checked: root.currentReaderTheme === 2
+                QQC2.ActionGroup.group: readerThemeActionGroup
+                onTriggered: root.setReaderThemeMode(2)
+            }
+        },
+        Kirigami.Action {
+            text: i18nc("@action:intoolbar", "Edit Book")
+            displayHint: Kirigami.DisplayHint.IconOnly
+            icon.name: "document-edit"
+            enabled: Config.editorPath.trim().length > 0 && root.filename !== ""
+            onTriggered: root.editBook()
         },
         Kirigami.Action {
             text: i18n("Book Details")
@@ -320,7 +396,7 @@ Kirigami.Page {
                     view.nextSection();
                 } else if (event.key === Qt.Key_E) {
                     if (root.filename) {
-                        EditorProcess.start('/usr/local/bin/ebook-edit-check', [root.filename]);
+                        root.editBook();
                     }
                 }
             } else if (event.modifiers & Qt.AltModifier) {
@@ -369,6 +445,7 @@ Kirigami.Page {
             error.rejectCertificate();
         }
         onVisibleChanged: if (!visible) {
+            EditorProcess.clearWatchedFile();
             root.bookClosed();
         }
 
@@ -446,15 +523,34 @@ Kirigami.Page {
             }
 
             QQC2.MenuItem {
-                text: i18n("Edit at Text")
-                icon.name: 'document-edit'
-                enabled: root.filename !== "" && backend.selection && backend.selection.text
+                text: i18n("Search with Google")
+                icon.name: 'internet-web-browser'
+                enabled: backend.selection && backend.selection.text
                 onClicked: {
                     if (!backend.selection || !backend.selection.text) {
                         return;
                     }
 
-                    EditorProcess.start('/usr/local/bin/ebook-edit-check', [root.filename, '--select-text', backend.selection.text]);
+                    const text = backend.selection.text.trim();
+                    if (text.length === 0) {
+                        return;
+                    }
+
+                    Qt.openUrlExternally("https://www.google.com/search?q=" + encodeURIComponent(text));
+                    view.runJavaScript("selectionAction('search-google')");
+                }
+            }
+
+            QQC2.MenuItem {
+                text: i18n("Edit at Text")
+                icon.name: 'document-edit'
+                enabled: Config.editorPath.trim().length > 0 && root.filename !== "" && backend.selection && backend.selection.text
+                onClicked: {
+                    if (!backend.selection || !backend.selection.text) {
+                        return;
+                    }
+
+                    root.editBook(backend.selection.text);
                     view.runJavaScript("selectionAction('edit-at-text')");
                 }
             }
@@ -740,6 +836,11 @@ Kirigami.Page {
                 return;
             }
 
+            // Use the enum value directly; derived bindings can still contain the
+            // previous value while this change handler is running.
+            const readerThemeInverted = root.currentReaderTheme === 1;
+            const readerThemeUsesSystemColors = root.currentReaderTheme === 2;
+
             const getIbooksInternalTheme = bgColor => {
                 const red = bgColor.r;
                 const green = bgColor.g;
@@ -761,7 +862,7 @@ Kirigami.Page {
             let fontWeight = 400;
             const fontStyle = fontDesc.styleName;
             const maxWidth = Config.maxWidth || 720;
-            const defaultTheme = Config.invert ? {
+            const defaultTheme = readerThemeInverted ? {
                 light: {
                     fg: "#ffffff",
                     bg: "#000000",
@@ -794,8 +895,8 @@ Kirigami.Page {
                     link: "#8ab4f8"
                 }
             };
-            const kdeForegroundColor = Config.invert ? Kirigami.Theme.backgroundColor.toString() : Kirigami.Theme.textColor.toString();
-            const kdeBackgroundColor = Config.invert ? Kirigami.Theme.textColor.toString() : Kirigami.Theme.backgroundColor.toString();
+            const kdeForegroundColor = readerThemeInverted ? Kirigami.Theme.backgroundColor.toString() : Kirigami.Theme.textColor.toString();
+            const kdeBackgroundColor = readerThemeInverted ? Kirigami.Theme.textColor.toString() : Kirigami.Theme.backgroundColor.toString();
             const kdeLinkColor = Kirigami.Theme.highlightColor.toString();
             const kdeTheme = {
                 light: {
@@ -872,7 +973,8 @@ Kirigami.Page {
             `;
 
             const hasReaderBackground = Config.readerBackgroundPath.length > 0;
-            const readerBackgroundImage = hasReaderBackground && Config.invert ? 'linear-gradient(rgba(0, 0, 0, 0.86), rgba(0, 0, 0, 0.86)), url("http://127.0.0.1:45961/static/background-image")' : hasReaderBackground ? 'linear-gradient(rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.86)), url("http://127.0.0.1:45961/static/background-image")' : '';
+            const readerBackgroundOverlay = readerThemeInverted ? 'rgba(0, 0, 0, 0.86)' : readerThemeUsesSystemColors ? kdeBackgroundColor : 'rgba(255, 255, 255, 0.86)';
+            const readerBackgroundImage = hasReaderBackground ? `linear-gradient(${readerBackgroundOverlay}, ${readerBackgroundOverlay}), url("http://127.0.0.1:45961/static/background-image")` : '';
             const readerBackgroundFilter = 'none';
             const readerBackgroundStylesheet = hasReaderBackground ? `
                 body {
@@ -961,10 +1063,10 @@ Kirigami.Page {
                     lineHeight: 1.5,
                     justify: Config.justify,
                     hyphenate: Config.hyphenate,
-                    invert: Config.invert,
-                    theme: Config.kdeTheming ? kdeTheme : defaultTheme,
+                    invert: readerThemeInverted,
+                    theme: readerThemeUsesSystemColors ? kdeTheme : defaultTheme,
                     overrideFont: !Config.usePublisherFont,
-                    userStylesheet: (Config.invert ? invertBackgroundStylesheet : transparentStylesheet) + readerBackgroundStylesheet,
+                    userStylesheet: (readerThemeInverted ? invertBackgroundStylesheet : readerThemeUsesSystemColors ? '' : transparentStylesheet) + readerBackgroundStylesheet,
                     readerBackgroundImage: readerBackgroundImage,
                     readerBackgroundFilter: readerBackgroundFilter
                 }
@@ -1013,6 +1115,11 @@ Kirigami.Page {
         sequence: "Ctrl+R"
         enabled: !view.loading
         onActivated: root.reloadCurrentBook()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+T"
+        onActivated: root.cycleReaderThemeMode()
     }
 
     Shortcut {

@@ -117,7 +117,6 @@ void ContentList::startSearch()
 {
     QTimer::singleShot(1, this, [this]() {
         Q_EMIT searchStarted();
-        qWarning() << "search started";
         d->actualContentList->knownFiles = d->knownFiles;
         d->actualContentList->startSearch(d->queries);
         d->manualContentLister->startSearch(d->queries);

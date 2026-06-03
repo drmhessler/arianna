@@ -48,6 +48,7 @@ QHash<int, QByteArray> CategoryEntriesModel::roleNames() const
         {SeriesNumbersRole, "seriesNumber"},
         {SeriesVolumesRole, "seriesVolume"},
         {AuthorRole, "author"},
+        {AuthorSortRole, "authorSort"},
         {PublisherRole, "publisher"},
         {CreatedRole, "created"},
         {LastOpenedTimeRole, "lastOpenedTime"},
@@ -77,6 +78,7 @@ QVariant CategoryEntriesModel::data(const QModelIndex &index, int role) const
         switch (role) {
         case Qt::DisplayRole:
         case TitleRole:
+        case AuthorSortRole:
             return model->name();
         case CategoryEntryCountRole:
             return model->bookCount();
@@ -122,6 +124,8 @@ QVariant CategoryEntriesModel::data(const QModelIndex &index, int role) const
             return entry.seriesVolumes;
         case AuthorRole:
             return entry.author;
+        case AuthorSortRole:
+            return entry.author.join(QStringLiteral(", "));
         case PublisherRole:
             return entry.publisher;
         case CreatedRole:

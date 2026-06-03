@@ -32,6 +32,7 @@ public:
     /// @return an entry matching the file name if it exists.
     std::optional<BookEntry> loadEntry(const QString &fileName);
     std::optional<BookEntry> loadEntryByIdentifier(const QString &identifier);
+    std::optional<BookEntry> loadEntryByUniqueIdentifier(const QString &uniqueIdentifier);
 
     /// \brief Add a new book to the cache.
     /// \param entry The entry to add.

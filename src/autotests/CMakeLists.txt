@@ -8,3 +8,9 @@ ecm_add_test(tableofcontenttest.cpp
     LINK_LIBRARIES arianna_static Qt::Test
     NAME_PREFIX "arianna-"
 )
+
+ecm_add_test(epubcontainertest.cpp
+    TEST_NAME epubcontainertest
+    LINK_LIBRARIES arianna_static Qt::Test KF6::Archive
+    NAME_PREFIX "arianna-"
+)

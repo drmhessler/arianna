@@ -2,13 +2,22 @@
 // SPDX-License-Identifier: LGPL-2.1-only or LGPL-3.0-only or LicenseRef-KDE-Accepted-LGPL
 
 #include <QCommandLineParser>
+#include <QEventLoop>
 #include <QFontDatabase>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkAccessManager>
 #include <QNetworkProxy>
 #include <QNetworkProxyFactory>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QThread>
+#include <QUrl>
 #include <QtWebEngineQuick>
 
 #include <QApplication>
@@ -106,6 +115,117 @@ static QString persistentServerToken()
     return token;
 }
 
+static QUrl bookServerSessionUrl()
+{
+    return QUrl(QStringLiteral("http://127.0.0.1:45961/session"));
+}
+
+static QByteArray waitForNetworkReply(QNetworkReply *reply, bool *ok, int timeoutMs = 1000, bool warnOnFailure = true)
+{
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+
+    timeout.start(timeoutMs);
+    loop.exec();
+
+    if (!timeout.isActive()) {
+        reply->abort();
+        if (ok) {
+            *ok = false;
+        }
+        reply->deleteLater();
+        return {};
+    }
+
+    const bool success = reply->error() == QNetworkReply::NoError;
+    const QByteArray body = success ? reply->readAll() : QByteArray();
+
+    if (!success && warnOnFailure) {
+        qWarning() << "BookServer session request failed:" << reply->errorString();
+    }
+
+    if (ok) {
+        *ok = success;
+    }
+
+    reply->deleteLater();
+    return body;
+}
+
+static QString requestBookServerSessionToken(const QString &serverToken, bool warnOnFailure = true)
+{
+    QNetworkAccessManager manager;
+    QNetworkRequest request(bookServerSessionUrl());
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QByteArrayLiteral("application/json"));
+    request.setRawHeader(QByteArrayLiteral("X-Arianna-Server-Token"), serverToken.toUtf8());
+
+    auto *reply = manager.post(request, QByteArrayLiteral("{}"));
+    bool ok = false;
+    const QByteArray body = waitForNetworkReply(reply, &ok, 1000, warnOnFailure);
+    if (!ok) {
+        return {};
+    }
+
+    const QJsonDocument document = QJsonDocument::fromJson(body);
+    const QString sessionToken = document.object().value(QStringLiteral("sessionToken")).toString();
+    if (sessionToken.isEmpty()) {
+        qWarning() << "BookServer did not return a session token";
+    }
+
+    return sessionToken;
+}
+
+static bool unregisterBookServerSessionToken(const QString &sessionToken)
+{
+    if (sessionToken.isEmpty()) {
+        return true;
+    }
+
+    QNetworkAccessManager manager;
+    QNetworkRequest request(bookServerSessionUrl());
+    request.setRawHeader(QByteArrayLiteral("X-Arianna-Session-Token"), sessionToken.toUtf8());
+
+    auto *reply = manager.deleteResource(request);
+    bool ok = false;
+    waitForNetworkReply(reply, &ok);
+    return ok;
+}
+
+static bool startDetachedBookServer()
+{
+    const bool started = QProcess::startDetached(QCoreApplication::applicationFilePath(), {QStringLiteral("--bookserver")});
+    if (!started) {
+        qWarning() << "Unable to start detached Arianna BookServer";
+    }
+
+    return started;
+}
+
+static QString ensureBookServerSessionToken(const QString &serverToken)
+{
+    bool triedStartingServer = false;
+
+    for (int attempt = 0; attempt < 30; ++attempt) {
+        const QString sessionToken = requestBookServerSessionToken(serverToken, false);
+        if (!sessionToken.isEmpty()) {
+            return sessionToken;
+        }
+
+        if (!triedStartingServer) {
+            triedStartingServer = true;
+            startDetachedBookServer();
+        }
+
+        QThread::msleep(100);
+    }
+
+    return {};
+}
+
 static bool hasBookServerOnlyArgument(int argc, char *argv[])
 {
     for (int i = 1; i < argc; ++i) {
@@ -181,7 +301,7 @@ int main(int argc, char *argv[])
     std::signal(SIGTERM, handleUnixSignal);
 
     if (bookServerOnly) {
-        BookServer bookServer(serverToken);
+        BookServer bookServer(serverToken, true);
         if (!bookServer.isRunning()) {
             return 1;
         }
@@ -193,6 +313,18 @@ int main(int argc, char *argv[])
     auto *webProfile = QWebEngineProfile::defaultProfile();
     webProfile->setHttpCacheType(QWebEngineProfile::NoCache);
     webProfile->setPersistentCookiesPolicy(QWebEngineProfile::NoPersistentCookies);
+
+    const QString sessionToken = ensureBookServerSessionToken(serverToken);
+    if (sessionToken.isEmpty()) {
+        qWarning() << "Unable to register this reader with the Arianna BookServer";
+        return 1;
+    }
+
+    webProfile->setUrlRequestInterceptor(new AriannaWebRequestInterceptor(sessionToken, webProfile));
+    QObject::connect(app.get(), &QCoreApplication::aboutToQuit, app.get(), [sessionToken] {
+        unregisterBookServerSessionToken(sessionToken);
+    });
+
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextObject(new KLocalizedQmlContext(&engine));
     engine.rootContext()->setContextProperty(QStringLiteral("applicationFilePath"), QCoreApplication::applicationFilePath());
@@ -206,17 +338,8 @@ int main(int argc, char *argv[])
 
     KDBusService service(KDBusService::Multiple);
 
-    BookServer bookServer(serverToken);
     auto navigation = engine.singletonInstance<Navigation *>("org.kde.arianna", "Navigation");
-    QString sessionToken = serverToken;
-    if (bookServer.isRunning()) {
-        sessionToken = navigation->bookServerToken();
-        bookServer.addSessionToken(sessionToken);
-        qDebug() << "Arianna BookServer running with UI, session token:" << sessionToken;
-    } else {
-        qDebug() << "Using already running Arianna BookServer";
-    }
-    webProfile->setUrlRequestInterceptor(new AriannaWebRequestInterceptor(sessionToken, webProfile));
+    qDebug() << "Arianna BookServer session registered:" << sessionToken;
 
     QObject::connect(&service,
                      &KDBusService::activateRequested,

@@ -309,16 +309,35 @@ export class View extends HTMLElement {
             ?.find(m => m.type.includes('bodymatter') || m.type.includes('text'))
             ?.href ?? this.book.sections.findIndex(s => s.linear !== 'no'))
     }
+    #canGoTo(resolved) {
+        return resolved
+            && Number.isInteger(resolved.index)
+            && resolved.index >= 0
+            && resolved.index < this.book.sections.length
+    }
     async init({ lastLocation, showTextStart }) {
-        const resolved = lastLocation ? this.resolveNavigation(lastLocation) : null
-        if (resolved) {
-            await this.renderer.goTo(resolved)
-            this.history.pushState(lastLocation)
+        let resolved = null
+        if (lastLocation) try {
+            resolved = await this.resolveNavigation(lastLocation)
+        } catch (e) {
+            console.warn(e)
         }
-        else if (showTextStart) await this.goToTextStart()
+        if (this.#canGoTo(resolved)) {
+            try {
+                await this.renderer.goTo(resolved)
+                this.history.pushState(lastLocation)
+                return
+            } catch (e) {
+                console.warn(e)
+                console.warn(`Could not restore last location ${lastLocation}`)
+            }
+        } else if (lastLocation) {
+            console.warn(`Could not resolve last location ${lastLocation}`)
+        }
+        if (showTextStart) await this.goToTextStart()
         else {
-            this.history.pushState(0)
-            await this.next()
+            const index = this.book.sections.findIndex(s => s.linear !== 'no')
+            await this.goTo(index >= 0 ? index : 0)
         }
     }
     #emit(name, detail, cancelable) {
@@ -456,8 +475,9 @@ export class View extends HTMLElement {
         }
     }
     async goTo(target) {
-        const resolved = this.resolveNavigation(target)
         try {
+            const resolved = await this.resolveNavigation(target)
+            if (!this.#canGoTo(resolved)) throw new Error(`Could not resolve target ${target}`)
             await this.renderer.goTo(resolved)
             this.history.pushState(target)
             return resolved
@@ -474,6 +494,7 @@ export class View extends HTMLElement {
     async select(target) {
         try {
             const obj = await this.resolveNavigation(target)
+            if (!this.#canGoTo(obj)) throw new Error(`Could not resolve target ${target}`)
             await this.renderer.goTo({ ...obj, select: true })
             this.history.pushState(target)
         } catch(e) {

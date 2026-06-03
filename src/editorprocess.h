@@ -2,11 +2,13 @@
 
 #pragma once
 
+#include <QDateTime>
 #include <QFileSystemWatcher>
 #include <QObject>
 #include <QProcess>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <qqmlintegration.h>
 
 class EditorProcess : public QObject
@@ -21,6 +23,7 @@ public:
     Q_INVOKABLE void start(const QString &program, const QStringList &arguments);
     Q_INVOKABLE bool startDetached(const QString &program, const QStringList &arguments = {});
     Q_INVOKABLE void stop();
+    Q_INVOKABLE void clearWatchedFile();
     Q_INVOKABLE QByteArray readAllStandardOutput();
     Q_INVOKABLE QByteArray readAllStandardError();
 
@@ -40,7 +43,15 @@ private Q_SLOTS:
     void handleReadyRead();
 
 private:
+    void watchFile(const QString &filePath);
+    void scheduleEditedFileChanged(const QString &filePath);
+    bool updateWatchedFileState();
+
     QProcess *process = nullptr;
     QFileSystemWatcher *fileWatcher = nullptr;
+    QTimer *editedFileChangedTimer = nullptr;
     QString watchedFilePath;
+    QString pendingEditedFile;
+    QDateTime watchedFileLastModified;
+    qint64 watchedFileSize = -1;
 };
