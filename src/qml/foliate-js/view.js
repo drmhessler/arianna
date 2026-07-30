@@ -221,6 +221,7 @@ export class View extends HTMLElement {
     isFixedLayout = false
     lastLocation
     history = new History()
+    cfiFilter = null
     constructor() {
         super()
         this.history.addEventListener('popstate', ({ detail }) => {
@@ -347,7 +348,7 @@ export class View extends HTMLElement {
         const progress = this.#sectionProgress?.getProgress(index, fraction, size) ?? {}
         const tocItem = this.#tocProgress?.getProgress(index, range)
         const pageItem = this.#pageProgress?.getProgress(index, range)
-        const cfi = this.getCFI(index, range)
+        const cfi = this.getCFI(index, range, this.cfiFilter)
         this.lastLocation = { ...progress, tocItem, pageItem, cfi, range }
         if (reason === 'snap' || reason === 'page' || reason === 'scroll')
             this.history.replaceState(cfi)
@@ -386,7 +387,7 @@ export class View extends HTMLElement {
         const { value } = annotation
         if (value.startsWith(SEARCH_PREFIX)) {
             const cfi = value.replace(SEARCH_PREFIX, '')
-            const { index, anchor } = await this.resolveNavigation(cfi)
+            const { index, anchor } = await this.resolveNavigation(cfi, this.cfiFilter)
             const obj = this.#getOverlayer(index)
             if (obj) {
                 const { overlayer, doc } = obj
@@ -399,7 +400,7 @@ export class View extends HTMLElement {
             }
             return
         }
-        const { index, anchor } = await this.resolveNavigation(value)
+        const { index, anchor } = await this.resolveNavigation(value, this.cfiFilter)
         const obj = this.#getOverlayer(index)
         if (obj) {
             const { overlayer, doc } = obj
@@ -445,29 +446,29 @@ export class View extends HTMLElement {
             this.#emit('show-annotation', { value, index, range })
         }
     }
-    getCFI(index, range) {
+    getCFI(index, range, filter) {
         const baseCFI = this.book.sections[index].cfi ?? CFI.fake.fromIndex(index)
         if (!range) return baseCFI
-        return CFI.joinIndir(baseCFI, CFI.fromRange(range))
+        return CFI.joinIndir(baseCFI, CFI.fromRange(range, filter))
     }
-    resolveCFI(cfi) {
+    resolveCFI(cfi, filter) {
         if (this.book.resolveCFI)
-            return this.book.resolveCFI(cfi)
+            return this.book.resolveCFI(cfi, filter)
         else {
             const parts = CFI.parse(cfi)
             const index = CFI.fake.toIndex((parts.parent ?? parts).shift())
-            const anchor = doc => CFI.toRange(doc, parts)
+            const anchor = doc => CFI.toRange(doc, parts, filter)
             return { index, anchor }
         }
     }
-    resolveNavigation(target) {
+    resolveNavigation(target, filter = this.cfiFilter) {
         try {
             if (typeof target === 'number') return { index: target }
             if (typeof target.fraction === 'number') {
                 const [index, anchor] = this.#sectionProgress.getSection(target.fraction)
                 return { index, anchor }
             }
-            if (CFI.isCFI.test(target)) return this.resolveCFI(target)
+            if (CFI.isCFI.test(target)) return this.resolveCFI(target, filter)
             return this.book.resolveHref(target)
         } catch (e) {
             console.error(e)
@@ -550,7 +551,7 @@ export class View extends HTMLElement {
     async * #searchSection(matcher, query, index) {
         const doc = await this.book.sections[index].createDocument()
         for (const { range, excerpt } of matcher(doc, query))
-            yield { cfi: this.getCFI(index, range), excerpt }
+            yield { cfi: this.getCFI(index, range, this.cfiFilter), excerpt }
     }
     async * #searchBook(matcher, query) {
         const { sections } = this.book
@@ -558,7 +559,7 @@ export class View extends HTMLElement {
             if (!createDocument) continue
             const doc = await createDocument()
             const subitems = Array.from(matcher(doc, query), ({ range, excerpt }) =>
-                ({ cfi: this.getCFI(index, range), excerpt }))
+                ({ cfi: this.getCFI(index, range, this.cfiFilter), excerpt }))
             const progress = (index + 1) / sections.length
             yield { progress }
             if (subitems.length) yield { index, subitems }

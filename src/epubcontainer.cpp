@@ -17,10 +17,20 @@
 #include <QImageReader>
 #include <QRegularExpression>
 #include <QScopedPointer>
+#include <QTemporaryFile>
+#include <QUrl>
+#include <QUuid>
+#include <QXmlStreamReader>
 
 #include <KZip>
 #include <QBuffer>
+#include <QCryptographicHash>
 #include <QMimeDatabase>
+
+#include <algorithm>
+#include <functional>
+#include <qpropertyprivate.h>
+#include <utility>
 
 #define METADATA_FOLDER QStringLiteral("META-INF")
 #define MIMETYPE_FILE QStringLiteral("mimetype")
@@ -35,6 +45,16 @@ static QString escapeXmlAttribute(const QString &value)
     escaped.replace(QStringLiteral(">"), QStringLiteral("&gt;"));
     return escaped;
 }
+
+static QString escapeXmlText(const QString &value)
+{
+    QString escaped = value;
+    escaped.replace(QStringLiteral("&"), QStringLiteral("&amp;"));
+    escaped.replace(QStringLiteral("<"), QStringLiteral("&lt;"));
+    escaped.replace(QStringLiteral(">"), QStringLiteral("&gt;"));
+    return escaped;
+}
+
 static QString appendProperty(const QString &properties, const QString &property)
 {
     QStringList parts = properties.split(u' ', Qt::SkipEmptyParts);
@@ -65,6 +85,25 @@ static bool isCssFile(const QString &path)
     return path.toLower().endsWith(QStringLiteral(".css"));
 }
 
+static QString archivePathFromUri(QString path)
+{
+    const qsizetype fragmentIndex = path.indexOf(QLatin1Char('#'));
+    if (fragmentIndex >= 0) {
+        path = path.left(fragmentIndex);
+    }
+
+    path = QUrl::fromPercentEncoding(path.toUtf8());
+    if (path.startsWith(QLatin1Char('/'))) {
+        path.remove(0, 1);
+    }
+
+    return QDir::cleanPath(path);
+}
+
+static QString pathWithoutFragment(QString path);
+static bool setDomContentPreservingMarkup(QDomDocument &doc, const QByteArray &data);
+static bool setDomContentWithNamespaces(QDomDocument &doc, const QByteArray &data);
+
 static QString resolveRelativePath(const QString &basePath, const QString &relativePath)
 {
     if (relativePath.startsWith(QStringLiteral("http://")) || relativePath.startsWith(QStringLiteral("https://"))
@@ -73,10 +112,130 @@ static QString resolveRelativePath(const QString &basePath, const QString &relat
         return relativePath;
     }
 
-    const QString cleanRelative = relativePath.section(u'#', 0, 0);
+    const QString cleanRelative = archivePathFromUri(relativePath);
     const QString baseDir = QFileInfo(basePath).path();
 
     return QDir::cleanPath(baseDir + QStringLiteral("/") + cleanRelative);
+}
+
+static QString relativePathFrom(const QString &basePath, const QString &targetPath)
+{
+    const QString baseDir = QFileInfo(basePath).path();
+    if (baseDir.isEmpty() || baseDir == QStringLiteral(".")) {
+        return targetPath;
+    }
+
+    const QString prefix = baseDir + QLatin1Char('/');
+    if (targetPath.startsWith(prefix)) {
+        return targetPath.mid(prefix.size());
+    }
+
+    return QDir(baseDir).relativeFilePath(targetPath);
+}
+
+static QString resolveReferenceTarget(QString basePath, QString href)
+{
+    href = href.trimmed();
+    if (href.isEmpty()) {
+        return {};
+    }
+
+    if (href.startsWith(QStringLiteral("epubcfi("))) {
+        return href;
+    }
+
+    const QString lower = href.toLower();
+    if (lower.startsWith(QStringLiteral("http://")) || lower.startsWith(QStringLiteral("https://")) || lower.startsWith(QStringLiteral("data:"))
+        || lower.startsWith(QStringLiteral("blob:")) || lower.startsWith(QStringLiteral("javascript:")) || lower.startsWith(QStringLiteral("mailto:"))) {
+        return {};
+    }
+
+    basePath = pathWithoutFragment(basePath);
+
+    QString fragment;
+    const qsizetype fragmentIndex = href.indexOf(QLatin1Char('#'));
+    if (fragmentIndex >= 0) {
+        fragment = QStringLiteral("#") + QUrl::fromPercentEncoding(href.mid(fragmentIndex + 1).toUtf8());
+        href = href.left(fragmentIndex);
+    }
+
+    QString targetPath;
+    if (href.isEmpty()) {
+        targetPath = basePath;
+    } else {
+        const QString cleanHref = archivePathFromUri(href);
+        const QString baseDir = QFileInfo(basePath).path();
+        targetPath = QDir::cleanPath(baseDir + QStringLiteral("/") + cleanHref);
+    }
+
+    if (targetPath == QStringLiteral(".")) {
+        targetPath.clear();
+    }
+
+    return targetPath + fragment;
+}
+
+static QString pathWithoutFragment(QString path)
+{
+    const qsizetype fragmentIndex = path.indexOf(QLatin1Char('#'));
+    if (fragmentIndex >= 0) {
+        path = path.left(fragmentIndex);
+    }
+    if (path.startsWith(QLatin1Char('/'))) {
+        path.remove(0, 1);
+    }
+
+    return QDir::cleanPath(path);
+}
+
+static bool isSupportedImageItem(const EpubItem &item)
+{
+    return QImageReader::supportedMimeTypes().contains(item.mimetype);
+}
+
+static bool isDocumentItem(const EpubItem &item)
+{
+    return item.mimetype == QByteArrayLiteral("application/xhtml+xml") || item.mimetype == QByteArrayLiteral("text/html")
+        || item.mimetype == QByteArrayLiteral("application/x-dtbook+xml") || item.mimetype == QByteArrayLiteral("text/x-oeb1-document");
+}
+
+static bool isNavigationDocumentItem(const EpubItem &item)
+{
+    return item.properties.contains(QStringLiteral("nav")) || item.mimetype == QByteArrayLiteral("application/x-dtbncx+xml");
+}
+
+static QString imageReference(const QDomElement &element)
+{
+    const QString localName = element.localName().isEmpty() ? element.tagName() : element.localName();
+    if (localName == QStringLiteral("img")) {
+        return element.attribute(QStringLiteral("src"));
+    }
+    if (localName == QStringLiteral("image")) {
+        QString href = element.attribute(QStringLiteral("href"));
+        if (href.isEmpty()) {
+            href = element.attribute(QStringLiteral("xlink:href"));
+        }
+        return href;
+    }
+
+    return {};
+}
+
+static void collectImageReferences(const QDomNode &node, QStringList &references)
+{
+    const QDomElement element = node.toElement();
+    if (!element.isNull()) {
+        const QString reference = imageReference(element);
+        if (!reference.isEmpty()) {
+            references.append(reference);
+        }
+    }
+
+    QDomNode child = node.firstChild();
+    while (!child.isNull()) {
+        collectImageReferences(child, references);
+        child = child.nextSibling();
+    }
 }
 
 static QByteArray rewriteCssResourceLinks(const QByteArray &data, const QString &currentPath, const ResourceMap &resourceMap)
@@ -125,7 +284,7 @@ static QByteArray rewriteXmlResourceLinks(const QByteArray &data, const QString 
 {
     QString text = QString::fromUtf8(data);
 
-    static const QRegularExpression attrRegex(QStringLiteral(R"###((src|href|poster)=["']([^"']+)["'])###"));
+    static const QRegularExpression attrRegex(QStringLiteral(R"###((src|href|poster|data-sync)=["']([^"']+)["'])###"));
 
     QRegularExpressionMatchIterator it = attrRegex.globalMatch(text);
 
@@ -165,7 +324,155 @@ static QByteArray rewriteXmlResourceLinks(const QByteArray &data, const QString 
     return text.toUtf8();
 }
 
-static QByteArray rewriteOpfManifestLinks(const QByteArray &data, const QString &opfPath, const ResourceMap &resourceMap)
+struct ServerReadyCopyContext {
+    ResourceMap resourceMap;
+    bool includeReferences = false;
+    QString opfPath;
+    QString referencesPath;
+    QVector<EpubReference> references;
+    QHash<QString, EpubReference> referenceBySourceAnchor;
+};
+
+static QString uniqueManifestItemId(const QDomElement &manifest, const QString &baseId)
+{
+    QSet<QString> existingIds;
+    const QDomNodeList itemNodes = manifest.elementsByTagName(QStringLiteral("item"));
+    for (int i = 0; i < itemNodes.count(); ++i) {
+        const QString id = itemNodes.at(i).toElement().attribute(QStringLiteral("id"));
+        if (!id.isEmpty()) {
+            existingIds.insert(id);
+        }
+    }
+
+    QString id = baseId;
+    int suffix = 2;
+    while (existingIds.contains(id)) {
+        id = baseId + QString::number(suffix++);
+    }
+
+    return id;
+}
+
+static void addReferencesDocumentToOpf(QDomDocument &doc, const QString &opfPath, const QString &referencesPath)
+{
+    const QDomNodeList manifestNodes = doc.elementsByTagName(QStringLiteral("manifest"));
+    if (manifestNodes.isEmpty()) {
+        return;
+    }
+
+    QDomElement manifest = manifestNodes.at(0).toElement();
+    const QString href = relativePathFrom(opfPath, referencesPath);
+    const QDomNodeList itemNodes = manifest.elementsByTagName(QStringLiteral("item"));
+    QString referencesItemId;
+    for (int i = 0; i < itemNodes.count(); ++i) {
+        const QDomElement item = itemNodes.at(i).toElement();
+        if (item.attribute(QStringLiteral("href")) == href) {
+            referencesItemId = item.attribute(QStringLiteral("id"));
+            break;
+        }
+    }
+
+    const QString namespaceUri = manifest.namespaceURI();
+    if (referencesItemId.isEmpty()) {
+        referencesItemId = uniqueManifestItemId(manifest, QStringLiteral("arianna-references"));
+        QDomElement item = namespaceUri.isEmpty() ? doc.createElement(QStringLiteral("item")) : doc.createElementNS(namespaceUri, QStringLiteral("item"));
+        item.setAttribute(QStringLiteral("id"), referencesItemId);
+        item.setAttribute(QStringLiteral("href"), href);
+        item.setAttribute(QStringLiteral("media-type"), QStringLiteral("application/xhtml+xml"));
+        manifest.appendChild(item);
+    }
+
+    const QDomNodeList spineNodes = doc.elementsByTagName(QStringLiteral("spine"));
+    if (spineNodes.isEmpty()) {
+        return;
+    }
+
+    QDomElement spine = spineNodes.at(0).toElement();
+    const QDomNodeList itemRefNodes = spine.elementsByTagName(QStringLiteral("itemref"));
+    for (int i = 0; i < itemRefNodes.count(); ++i) {
+        if (itemRefNodes.at(i).toElement().attribute(QStringLiteral("idref")) == referencesItemId) {
+            return;
+        }
+    }
+
+    const QString spineNamespaceUri = spine.namespaceURI();
+    QDomElement itemRef =
+        spineNamespaceUri.isEmpty() ? doc.createElement(QStringLiteral("itemref")) : doc.createElementNS(spineNamespaceUri, QStringLiteral("itemref"));
+    itemRef.setAttribute(QStringLiteral("idref"), referencesItemId);
+    itemRef.setAttribute(QStringLiteral("linear"), QStringLiteral("no"));
+    spine.appendChild(itemRef);
+}
+
+static QByteArray rewriteReferenceAnchorLinks(const QByteArray &data, const QString &currentPath, const ServerReadyCopyContext &context)
+{
+    if (!context.includeReferences || context.referenceBySourceAnchor.isEmpty()) {
+        return data;
+    }
+
+    QDomDocument doc;
+    if (!setDomContentWithNamespaces(doc, data)) {
+        return data;
+    }
+
+    bool changed = false;
+    const QString referenceHrefPrefix = relativePathFrom(currentPath, context.referencesPath) + QLatin1Char('#');
+    const QDomNodeList anchors = doc.elementsByTagName(QStringLiteral("a"));
+    for (int i = 0; i < anchors.count(); ++i) {
+        QDomElement anchor = anchors.at(i).toElement();
+        if (anchor.attribute(QStringLiteral("data-role")) != QStringLiteral("anchor")
+            || anchor.attribute(QStringLiteral("data-anchor-type")) != QStringLiteral("crossref")) {
+            continue;
+        }
+
+        const QString sourceAnchorId = anchor.attribute(QStringLiteral("id"));
+        if (sourceAnchorId.isEmpty() || !context.referenceBySourceAnchor.contains(sourceAnchorId)) {
+            continue;
+        }
+
+        anchor.setAttribute(QStringLiteral("href"), referenceHrefPrefix + sourceAnchorId);
+        changed = true;
+    }
+
+    return changed ? doc.toByteArray() : data;
+}
+
+static QByteArray createReferencesDocument(const ServerReadyCopyContext &context)
+{
+    QString html;
+    html += QStringLiteral("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+    html += QStringLiteral("<html xmlns=\"http://www.w3.org/1999/xhtml\">\n");
+    html += QStringLiteral("<head><title>Arianna References</title></head>\n");
+    html += QStringLiteral("<body>\n");
+    html += QStringLiteral("<h1>References</h1>\n");
+
+    if (context.references.isEmpty()) {
+        html += QStringLiteral("<p>No references.</p>\n");
+    }
+
+    for (const EpubReference &reference : std::as_const(context.references)) {
+        if (reference.sourceAnchorId.isEmpty()) {
+            continue;
+        }
+
+        html += QStringLiteral("<section id=\"") + escapeXmlAttribute(reference.sourceAnchorId) + QStringLiteral("\">\n");
+        html += QStringLiteral("<h2>Referenz</h2>\n");
+        html += QStringLiteral("<dl>\n");
+        html += QStringLiteral("<dt>Source anchor</dt><dd>") + escapeXmlText(reference.sourceAnchorId) + QStringLiteral("</dd>\n");
+        html += QStringLiteral("<dt>Target book</dt><dd>") + escapeXmlText(reference.targetBookId) + QStringLiteral("</dd>\n");
+        html += QStringLiteral("<dt>Target anchor</dt><dd>") + escapeXmlText(reference.targetAnchorId) + QStringLiteral("</dd>\n");
+        html += QStringLiteral("<dt>Target location</dt><dd>") + escapeXmlText(reference.targetLocation) + QStringLiteral("</dd>\n");
+        html += QStringLiteral("</dl>\n");
+        if (!reference.targetPreviewHtml.isEmpty()) {
+            html += QStringLiteral("<blockquote>") + escapeXmlText(reference.targetPreviewHtml) + QStringLiteral("</blockquote>\n");
+        }
+        html += QStringLiteral("</section>\n");
+    }
+
+    html += QStringLiteral("</body>\n</html>\n");
+    return html.toUtf8();
+}
+
+static QByteArray rewriteOpfManifestLinks(const QByteArray &data, const QString &opfPath, const ServerReadyCopyContext &context)
 {
     QDomDocument doc;
 
@@ -200,24 +507,28 @@ static QByteArray rewriteOpfManifestLinks(const QByteArray &data, const QString 
         const QString resolved = QDir::cleanPath(resolveRelativePath(opfPath, href));
 
         // 1. Manifest-Ressource selbst auf Server-URL umbiegen
-        if (resourceMap.contains(resolved)) {
-            item.setAttribute(QStringLiteral("href"), resourceMap.value(resolved));
+        if (context.resourceMap.contains(resolved)) {
+            item.setAttribute(QStringLiteral("href"), context.resourceMap.value(resolved));
 
-            qDebug() << "Rewriting OPF manifest resource:" << resolved << "->" << resourceMap.value(resolved);
+            qDebug() << "Rewriting OPF manifest resource:" << resolved << "->" << context.resourceMap.value(resolved);
         }
 
         // 2. Content-Dokumente als Host von Remote Resources markieren
-        if (isRemoteResourceHostMime(mediaType)) {
+        if (!context.resourceMap.isEmpty() && isRemoteResourceHostMime(mediaType)) {
             const QString oldProperties = item.attribute(QStringLiteral("properties"));
 
             item.setAttribute(QStringLiteral("properties"), appendProperty(oldProperties, QStringLiteral("remote-resources")));
         }
     }
 
+    if (context.includeReferences && !context.referencesPath.isEmpty()) {
+        addReferencesDocumentToOpf(doc, opfPath, context.referencesPath);
+    }
+
     return doc.toByteArray();
 }
 
-static void copyDirectoryServerReady(KZip &outZip, const KArchiveDirectory *dir, const QString &prefix, const ResourceMap &resourceMap)
+static void copyDirectoryServerReady(KZip &outZip, const KArchiveDirectory *dir, const QString &prefix, const ServerReadyCopyContext &context)
 {
     if (!dir) {
         return;
@@ -243,7 +554,7 @@ static void copyDirectoryServerReady(KZip &outZip, const KArchiveDirectory *dir,
             const auto *subdir = dynamic_cast<const KArchiveDirectory *>(entry);
 
             if (subdir) {
-                copyDirectoryServerReady(outZip, subdir, cleanPath, resourceMap);
+                copyDirectoryServerReady(outZip, subdir, cleanPath, context);
             }
 
             continue;
@@ -256,7 +567,11 @@ static void copyDirectoryServerReady(KZip &outZip, const KArchiveDirectory *dir,
         }
 
         // Diese Dateien werden jetzt vom BookServer geliefert.
-        if (resourceMap.contains(cleanPath)) {
+        if (context.resourceMap.contains(cleanPath)) {
+            continue;
+        }
+
+        if (context.includeReferences && cleanPath == context.referencesPath) {
             continue;
         }
 
@@ -270,15 +585,1268 @@ static void copyDirectoryServerReady(KZip &outZip, const KArchiveDirectory *dir,
         const QString lower = cleanPath.toLower();
 
         if (lower.endsWith(QStringLiteral(".opf"))) {
-            data = rewriteOpfManifestLinks(data, cleanPath, resourceMap);
+            data = rewriteOpfManifestLinks(data, cleanPath, context);
         } else if (isXmlLikeFile(cleanPath)) {
-            data = rewriteXmlResourceLinks(data, cleanPath, resourceMap);
+            data = rewriteReferenceAnchorLinks(data, cleanPath, context);
+            data = rewriteXmlResourceLinks(data, cleanPath, context.resourceMap);
         } else if (isCssFile(cleanPath)) {
-            data = rewriteCssResourceLinks(data, cleanPath, resourceMap);
+            data = rewriteCssResourceLinks(data, cleanPath, context.resourceMap);
         }
 
         outZip.writeFile(cleanPath, data);
     }
+}
+
+struct CfiStep {
+    int index = -1;
+    int offset = 0;
+    bool hasOffset = false;
+    QString id;
+};
+
+using CfiPath = QList<CfiStep>;
+
+struct ParsedCfi {
+    QVector<CfiPath> parent;
+    QVector<CfiPath> start;
+    QVector<CfiPath> end;
+    bool isRange = false;
+};
+
+struct CfiBoundary {
+    QDomNode node;
+    int offset = -1;
+    bool before = false;
+    bool after = false;
+
+    bool isValid() const
+    {
+        return !node.isNull();
+    }
+};
+
+struct IndexedCfiChild {
+    enum Kind {
+        Node,
+        TextGroup,
+        Before,
+        After,
+        First,
+        Last,
+        Empty,
+    };
+
+    Kind kind = Empty;
+    QDomNode node;
+    QList<QDomNode> textNodes;
+};
+
+static QString unwrapEpubCfi(QString cfi)
+{
+    cfi = cfi.trimmed();
+
+    static const QRegularExpression cfiRegex(QStringLiteral(R"(^epubcfi\((.*)\)$)"));
+    const QRegularExpressionMatch match = cfiRegex.match(cfi);
+    if (match.hasMatch()) {
+        return match.captured(1).trimmed();
+    }
+
+    return cfi;
+}
+
+static QStringList splitCfiExpression(const QString &value, const QChar separator)
+{
+    QStringList parts;
+    qsizetype start = 0;
+    int bracketDepth = 0;
+    bool escaped = false;
+
+    for (qsizetype i = 0; i < value.size(); ++i) {
+        const QChar ch = value.at(i);
+
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+
+        if (ch == QLatin1Char('^')) {
+            escaped = true;
+            continue;
+        }
+
+        if (ch == QLatin1Char('[')) {
+            ++bracketDepth;
+            continue;
+        }
+
+        if (ch == QLatin1Char(']')) {
+            bracketDepth = std::max(0, bracketDepth - 1);
+            continue;
+        }
+
+        if (ch == separator && bracketDepth == 0) {
+            parts.append(value.mid(start, i - start));
+            start = i + 1;
+        }
+    }
+
+    parts.append(value.mid(start));
+    return parts;
+}
+
+static QString readCfiBracketPrimaryValue(const QString &path, qsizetype &position)
+{
+    QString value;
+    bool escaped = false;
+
+    if (position < path.size() && path.at(position) == QLatin1Char('[')) {
+        ++position;
+    }
+
+    while (position < path.size()) {
+        const QChar ch = path.at(position);
+
+        if (escaped) {
+            value.append(ch);
+            escaped = false;
+            ++position;
+            continue;
+        }
+
+        if (ch == QLatin1Char('^')) {
+            escaped = true;
+            ++position;
+            continue;
+        }
+
+        if (ch == QLatin1Char(']')) {
+            ++position;
+            break;
+        }
+
+        if (ch == QLatin1Char(';') || ch == QLatin1Char(',')) {
+            while (position < path.size()) {
+                const QChar skip = path.at(position);
+                ++position;
+                if (skip == QLatin1Char('^') && position < path.size()) {
+                    ++position;
+                    continue;
+                }
+                if (skip == QLatin1Char(']')) {
+                    break;
+                }
+            }
+            break;
+        }
+
+        value.append(ch);
+        ++position;
+    }
+
+    return value;
+}
+
+static CfiPath parseCfiPath(const QString &path)
+{
+    CfiPath steps;
+    qsizetype position = 0;
+
+    while (position < path.size()) {
+        if (path.at(position) != QLatin1Char('/')) {
+            ++position;
+            continue;
+        }
+
+        ++position;
+
+        qsizetype numberStart = position;
+        while (position < path.size() && path.at(position).isDigit()) {
+            ++position;
+        }
+
+        bool ok = false;
+        CfiStep step;
+        step.index = path.mid(numberStart, position - numberStart).toInt(&ok);
+        if (!ok) {
+            continue;
+        }
+
+        while (position < path.size()) {
+            const QChar ch = path.at(position);
+            if (ch == QLatin1Char('/')) {
+                break;
+            }
+
+            if (ch == QLatin1Char('[')) {
+                if (step.id.isEmpty()) {
+                    step.id = readCfiBracketPrimaryValue(path, position);
+                } else {
+                    readCfiBracketPrimaryValue(path, position);
+                }
+                continue;
+            }
+
+            if (ch == QLatin1Char(':')) {
+                ++position;
+                qsizetype offsetStart = position;
+                while (position < path.size() && path.at(position).isDigit()) {
+                    ++position;
+                }
+
+                step.offset = path.mid(offsetStart, position - offsetStart).toInt(&ok);
+                step.hasOffset = ok;
+                continue;
+            }
+
+            ++position;
+        }
+
+        steps.append(step);
+    }
+
+    return steps;
+}
+
+static QVector<CfiPath> parseCfiIndirections(const QString &value)
+{
+    QVector<CfiPath> paths;
+    const QStringList parts = splitCfiExpression(value, QLatin1Char('!'));
+
+    for (const QString &part : parts) {
+        paths.append(parseCfiPath(part));
+    }
+
+    return paths;
+}
+
+static ParsedCfi parseCfi(const QString &cfi)
+{
+    ParsedCfi parsed;
+    const QString inner = unwrapEpubCfi(cfi);
+    const QStringList rangeParts = splitCfiExpression(inner, QLatin1Char(','));
+
+    if (rangeParts.size() == 3) {
+        parsed.isRange = true;
+        parsed.parent = parseCfiIndirections(rangeParts.at(0));
+        parsed.start = parseCfiIndirections(rangeParts.at(1));
+        parsed.end = parseCfiIndirections(rangeParts.at(2));
+        return parsed;
+    }
+
+    parsed.parent = parseCfiIndirections(inner);
+    return parsed;
+}
+
+static int spineIndexFromTopCfiPath(const CfiPath &path)
+{
+    if (path.isEmpty()) {
+        return -1;
+    }
+
+    const int cfiIndex = path.constLast().index;
+    if (cfiIndex <= 0 || cfiIndex % 2 != 0) {
+        return -1;
+    }
+
+    return cfiIndex / 2 - 1;
+}
+
+static CfiPath collapseCfiRangeSide(const QVector<CfiPath> &parent, const QVector<CfiPath> &side)
+{
+    CfiPath result;
+    if (!parent.isEmpty()) {
+        result = parent.constLast();
+    }
+
+    if (!side.isEmpty()) {
+        for (const CfiStep &step : side.constFirst()) {
+            result.append(step);
+        }
+    }
+
+    return result;
+}
+
+static bool isTextLikeNode(const QDomNode &node)
+{
+    return node.isText() || node.isCDATASection();
+}
+
+static bool isElementNode(const QDomNode &node)
+{
+    return node.isElement();
+}
+
+static bool isSkippableAnchorNode(const QDomNode &node)
+{
+    const QDomElement element = node.toElement();
+    if (element.isNull()) {
+        return false;
+    }
+
+    return element.attribute(QStringLiteral("data-role")) == QStringLiteral("anchor");
+}
+
+static void appendFilteredCfiChildNodes(const QDomNode &node, QList<QDomNode> &nodes)
+{
+    QDomNode child = node.firstChild();
+    while (!child.isNull()) {
+        if (isTextLikeNode(child)) {
+            nodes.append(child);
+        } else if (isElementNode(child)) {
+            if (isSkippableAnchorNode(child)) {
+                appendFilteredCfiChildNodes(child, nodes);
+            } else {
+                nodes.append(child);
+            }
+        }
+
+        child = child.nextSibling();
+    }
+}
+
+static IndexedCfiChild indexedNode(const QDomNode &node)
+{
+    IndexedCfiChild child;
+    child.kind = IndexedCfiChild::Node;
+    child.node = node;
+    return child;
+}
+
+static IndexedCfiChild indexedTextGroup(const QDomNode &first, const QDomNode &second)
+{
+    IndexedCfiChild child;
+    child.kind = IndexedCfiChild::TextGroup;
+    child.textNodes = {first, second};
+    return child;
+}
+
+static IndexedCfiChild indexedSentinel(const IndexedCfiChild::Kind kind)
+{
+    IndexedCfiChild child;
+    child.kind = kind;
+    return child;
+}
+
+static QVector<IndexedCfiChild> indexCfiChildNodes(const QDomNode &node)
+{
+    QList<QDomNode> childNodes;
+    appendFilteredCfiChildNodes(node, childNodes);
+
+    QVector<IndexedCfiChild> indexed;
+    for (const QDomNode &childNode : std::as_const(childNodes)) {
+        if (isTextLikeNode(childNode)) {
+            if (indexed.isEmpty()) {
+                indexed.append(indexedNode(childNode));
+            } else if (indexed.last().kind == IndexedCfiChild::TextGroup) {
+                indexed.last().textNodes.append(childNode);
+            } else if (indexed.last().kind == IndexedCfiChild::Node && isTextLikeNode(indexed.last().node)) {
+                const QDomNode previousText = indexed.last().node;
+                indexed.last() = indexedTextGroup(previousText, childNode);
+            } else {
+                indexed.append(indexedNode(childNode));
+            }
+        } else {
+            if (!indexed.isEmpty() && indexed.last().kind == IndexedCfiChild::Node && isElementNode(indexed.last().node)) {
+                indexed.append(indexedSentinel(IndexedCfiChild::Empty));
+            }
+            indexed.append(indexedNode(childNode));
+        }
+    }
+
+    if (!indexed.isEmpty() && indexed.first().kind == IndexedCfiChild::Node && isElementNode(indexed.first().node)) {
+        indexed.prepend(indexedSentinel(IndexedCfiChild::First));
+    }
+
+    if (!indexed.isEmpty() && indexed.last().kind == IndexedCfiChild::Node && isElementNode(indexed.last().node)) {
+        indexed.append(indexedSentinel(IndexedCfiChild::Last));
+    }
+
+    indexed.prepend(indexedSentinel(IndexedCfiChild::Before));
+    indexed.append(indexedSentinel(IndexedCfiChild::After));
+
+    return indexed;
+}
+
+static QDomElement findElementById(const QDomNode &node, const QString &id)
+{
+    const QDomElement element = node.toElement();
+    if (!element.isNull() && element.attribute(QStringLiteral("id")) == id) {
+        return element;
+    }
+
+    QDomNode child = node.firstChild();
+    while (!child.isNull()) {
+        const QDomElement found = findElementById(child, id);
+        if (!found.isNull()) {
+            return found;
+        }
+        child = child.nextSibling();
+    }
+
+    return {};
+}
+
+static CfiBoundary boundaryFromTextGroup(const QList<QDomNode> &nodes, const int offset)
+{
+    int consumed = 0;
+    for (const QDomNode &node : nodes) {
+        const int length = node.nodeValue().size();
+        if (consumed + length >= offset) {
+            return CfiBoundary{node, offset - consumed};
+        }
+        consumed += length;
+    }
+
+    return {};
+}
+
+static CfiBoundary resolveCfiBoundary(QDomDocument &doc, const CfiPath &path)
+{
+    if (path.isEmpty()) {
+        return CfiBoundary{doc.documentElement(), 0};
+    }
+
+    const QString id = path.constLast().id;
+    if (!id.isEmpty()) {
+        const QDomElement element = findElementById(doc.documentElement(), id);
+        if (!element.isNull()) {
+            return CfiBoundary{element, 0};
+        }
+    }
+
+    QDomNode node = doc.documentElement();
+
+    for (int i = 0; i < path.size(); ++i) {
+        if (node.isNull()) {
+            return {};
+        }
+
+        const CfiStep &step = path.at(i);
+        const QVector<IndexedCfiChild> indexed = indexCfiChildNodes(node);
+        if (step.index < 0 || step.index >= indexed.size()) {
+            return {};
+        }
+
+        const IndexedCfiChild child = indexed.at(step.index);
+        const bool finalStep = i == path.size() - 1;
+
+        switch (child.kind) {
+        case IndexedCfiChild::Node:
+            node = child.node;
+            break;
+        case IndexedCfiChild::TextGroup:
+            if (!finalStep) {
+                return {};
+            }
+            return boundaryFromTextGroup(child.textNodes, step.hasOffset ? step.offset : 0);
+        case IndexedCfiChild::First:
+            return CfiBoundary{node.firstChild().isNull() ? node : node.firstChild(), -1};
+        case IndexedCfiChild::Last:
+            return CfiBoundary{node.lastChild().isNull() ? node : node.lastChild(), -1};
+        case IndexedCfiChild::Before:
+            return CfiBoundary{node, -1, true, false};
+        case IndexedCfiChild::After:
+            return CfiBoundary{node, -1, false, true};
+        case IndexedCfiChild::Empty:
+            return {};
+        }
+    }
+
+    const CfiStep last = path.constLast();
+    return CfiBoundary{node, last.hasOffset ? last.offset : 0};
+}
+
+static bool isValidBoundary(const CfiBoundary &boundary)
+{
+    if (!boundary.isValid() || boundary.before || boundary.after || boundary.offset < 0) {
+        return boundary.isValid();
+    }
+
+    const int length = isTextLikeNode(boundary.node) ? boundary.node.nodeValue().size() : boundary.node.childNodes().size();
+    return boundary.offset <= length;
+}
+
+static QDomElement
+createAnchorElement(QDomDocument &doc, const QString &tagName, const QString &anchorId, const QString &anchorType, const QString &href = QString())
+{
+    const QString namespaceUri = doc.documentElement().namespaceURI();
+    QDomElement anchor = namespaceUri.isEmpty() ? doc.createElement(tagName) : doc.createElementNS(namespaceUri, tagName);
+    anchor.setAttribute(QStringLiteral("id"), anchorId);
+    anchor.setAttribute(QStringLiteral("data-role"), QStringLiteral("anchor"));
+    if (!anchorType.isEmpty()) {
+        anchor.setAttribute(QStringLiteral("data-anchor-type"), anchorType);
+    }
+    if (!href.isEmpty()) {
+        anchor.setAttribute(QStringLiteral("href"), href);
+    }
+    return anchor;
+}
+
+static QDomElement createAnnotationSpanElement(QDomDocument &doc, const QString &anchorId, const QString &anchorType)
+{
+    return createAnchorElement(doc, QStringLiteral("span"), anchorId, anchorType);
+}
+
+static bool wrapSingleTextNodeRange(QDomDocument &doc,
+                                    const CfiBoundary &start,
+                                    const CfiBoundary &end,
+                                    const QString &anchorId,
+                                    const QString &anchorType,
+                                    QString *selectedText,
+                                    const QString &tagName = QStringLiteral("a"),
+                                    const QString &href = QString())
+{
+    if (!isValidBoundary(start) || !isValidBoundary(end) || start.before || start.after || end.before || end.after) {
+        return false;
+    }
+
+    if (!isTextLikeNode(start.node) || start.node != end.node) {
+        return false;
+    }
+
+    const QString text = start.node.nodeValue();
+    const int textSize = static_cast<int>(text.size());
+    const int startOffset = std::clamp(start.offset, 0, textSize);
+    const int endOffset = std::clamp(end.offset, 0, textSize);
+    if (endOffset <= startOffset) {
+        return false;
+    }
+
+    const QString before = text.left(startOffset);
+    const QString selected = text.mid(startOffset, endOffset - startOffset);
+    const QString after = text.mid(endOffset);
+
+    QDomNode parent = start.node.parentNode();
+    if (parent.isNull()) {
+        return false;
+    }
+
+    QDomElement anchor = createAnchorElement(doc, tagName, anchorId, anchorType, href);
+    anchor.appendChild(doc.createTextNode(selected));
+
+    if (!before.isEmpty()) {
+        parent.insertBefore(doc.createTextNode(before), start.node);
+    }
+    parent.insertBefore(anchor, start.node);
+    if (!after.isEmpty()) {
+        parent.insertBefore(doc.createTextNode(after), start.node);
+    }
+    parent.removeChild(start.node);
+
+    if (selectedText) {
+        *selectedText = selected;
+    }
+
+    return true;
+}
+
+static QString anchorRangeElementName(const QDomElement &element)
+{
+    QString name = element.localName();
+    if (name.isEmpty()) {
+        name = element.tagName();
+    }
+
+    const int namespaceSeparator = name.indexOf(QLatin1Char(':'));
+    if (namespaceSeparator >= 0) {
+        name = name.mid(namespaceSeparator + 1);
+    }
+
+    return name.toLower();
+}
+
+static bool isInvalidElementInsideAnchor(const QDomElement &element)
+{
+    static const QStringList invalidElements = {
+        QStringLiteral("a"),      QStringLiteral("address"), QStringLiteral("article"), QStringLiteral("aside"),    QStringLiteral("blockquote"),
+        QStringLiteral("body"),   QStringLiteral("caption"), QStringLiteral("dd"),      QStringLiteral("details"),  QStringLiteral("dialog"),
+        QStringLiteral("div"),    QStringLiteral("dl"),      QStringLiteral("dt"),      QStringLiteral("fieldset"), QStringLiteral("figcaption"),
+        QStringLiteral("figure"), QStringLiteral("footer"),  QStringLiteral("form"),    QStringLiteral("h1"),       QStringLiteral("h2"),
+        QStringLiteral("h3"),     QStringLiteral("h4"),      QStringLiteral("h5"),      QStringLiteral("h6"),       QStringLiteral("head"),
+        QStringLiteral("header"), QStringLiteral("hr"),      QStringLiteral("html"),    QStringLiteral("li"),       QStringLiteral("main"),
+        QStringLiteral("nav"),    QStringLiteral("ol"),      QStringLiteral("p"),       QStringLiteral("pre"),      QStringLiteral("section"),
+        QStringLiteral("table"),  QStringLiteral("tbody"),   QStringLiteral("td"),      QStringLiteral("tfoot"),    QStringLiteral("th"),
+        QStringLiteral("thead"),  QStringLiteral("tr"),      QStringLiteral("ul"),
+    };
+
+    return invalidElements.contains(anchorRangeElementName(element));
+}
+
+static bool canPromoteWholeElementIntoAnchor(const QDomNode &node)
+{
+    const QDomElement element = node.toElement();
+    return !element.isNull() && !isInvalidElementInsideAnchor(element);
+}
+
+static bool hasInvalidAnchorDescendant(const QDomNode &node)
+{
+    const QDomElement element = node.toElement();
+    if (!element.isNull() && isInvalidElementInsideAnchor(element)) {
+        return true;
+    }
+
+    QDomNode child = node.firstChild();
+    while (!child.isNull()) {
+        if (hasInvalidAnchorDescendant(child)) {
+            return true;
+        }
+        child = child.nextSibling();
+    }
+
+    return false;
+}
+
+static bool canMoveNodeIntoAnchor(const QDomNode &node)
+{
+    return !hasInvalidAnchorDescendant(node);
+}
+
+static bool isAnnotatableInlineElement(const QDomElement &element)
+{
+    return !element.isNull() && !isInvalidElementInsideAnchor(element) && element.attribute(QStringLiteral("id")).isEmpty()
+        && element.attribute(QStringLiteral("data-role")) != QStringLiteral("anchor");
+}
+
+static void setAnchorAttributes(QDomElement &element, const QString &anchorId, const QString &anchorType)
+{
+    element.setAttribute(QStringLiteral("id"), anchorId);
+    element.setAttribute(QStringLiteral("data-role"), QStringLiteral("anchor"));
+    if (!anchorType.isEmpty()) {
+        element.setAttribute(QStringLiteral("data-anchor-type"), anchorType);
+    }
+}
+
+static void appendPlainText(const QDomNode &node, QString &text)
+{
+    if (isTextLikeNode(node)) {
+        text.append(node.nodeValue());
+        return;
+    }
+
+    QDomNode child = node.firstChild();
+    while (!child.isNull()) {
+        appendPlainText(child, text);
+        child = child.nextSibling();
+    }
+}
+
+static bool containsNode(const QDomNode &ancestor, const QDomNode &node)
+{
+    if (ancestor.isNull() || node.isNull()) {
+        return false;
+    }
+    if (ancestor == node) {
+        return true;
+    }
+
+    QDomNode child = ancestor.firstChild();
+    while (!child.isNull()) {
+        if (containsNode(child, node)) {
+            return true;
+        }
+        child = child.nextSibling();
+    }
+
+    return false;
+}
+
+static QDomNode firstTextLikeDescendant(const QDomNode &node)
+{
+    if (isTextLikeNode(node)) {
+        return node;
+    }
+
+    QDomNode child = node.firstChild();
+    while (!child.isNull()) {
+        const QDomNode text = firstTextLikeDescendant(child);
+        if (!text.isNull()) {
+            return text;
+        }
+        child = child.nextSibling();
+    }
+
+    return {};
+}
+
+static QDomNode lastTextLikeDescendant(const QDomNode &node)
+{
+    if (isTextLikeNode(node)) {
+        return node;
+    }
+
+    QDomNode child = node.lastChild();
+    while (!child.isNull()) {
+        const QDomNode text = lastTextLikeDescendant(child);
+        if (!text.isNull()) {
+            return text;
+        }
+        child = child.previousSibling();
+    }
+
+    return {};
+}
+
+static QDomNode childAt(const QDomNode &node, const int index)
+{
+    const QDomNodeList children = node.childNodes();
+    if (index < 0 || index >= children.size()) {
+        return {};
+    }
+
+    return children.at(index);
+}
+
+static bool annotateInlineElement(QDomElement element, const QString &anchorId, const QString &anchorType, QString *selectedText)
+{
+    if (!isAnnotatableInlineElement(element)) {
+        return false;
+    }
+
+    QString text;
+    appendPlainText(element, text);
+    if (text.isEmpty()) {
+        return false;
+    }
+
+    setAnchorAttributes(element, anchorId, anchorType);
+    if (selectedText) {
+        *selectedText = text;
+    }
+    return true;
+}
+
+static bool
+annotateExactInlineElementRange(const CfiBoundary &start, const CfiBoundary &end, const QString &anchorId, const QString &anchorType, QString *selectedText)
+{
+    if (!isValidBoundary(start) || !isValidBoundary(end) || start.before || start.after || end.before || end.after) {
+        return false;
+    }
+
+    if (start.node == end.node && isElementNode(start.node) && end.offset == start.offset + 1) {
+        return annotateInlineElement(childAt(start.node, start.offset).toElement(), anchorId, anchorType, selectedText);
+    }
+
+    if (!isTextLikeNode(start.node) || !isTextLikeNode(end.node) || start.offset != 0 || end.offset != end.node.nodeValue().size()) {
+        return false;
+    }
+
+    QDomNode candidate = start.node.parentNode();
+    while (!candidate.isNull() && candidate.isElement()) {
+        QDomElement element = candidate.toElement();
+        if (isInvalidElementInsideAnchor(element)) {
+            return false;
+        }
+
+        if (containsNode(candidate, end.node) && firstTextLikeDescendant(candidate) == start.node && lastTextLikeDescendant(candidate) == end.node) {
+            return annotateInlineElement(element, anchorId, anchorType, selectedText);
+        }
+
+        candidate = candidate.parentNode();
+    }
+
+    return false;
+}
+
+static QDomNode splitTextRangeBoundary(QDomDocument &doc, const CfiBoundary &boundary, const bool startBoundary)
+{
+    if (!isTextLikeNode(boundary.node) || boundary.before || boundary.after) {
+        return {};
+    }
+
+    QDomNode parent = boundary.node.parentNode();
+    if (parent.isNull()) {
+        return {};
+    }
+
+    const QString text = boundary.node.nodeValue();
+    const int textSize = static_cast<int>(text.size());
+    const int offset = std::clamp(boundary.offset, 0, textSize);
+
+    if (startBoundary) {
+        if (offset <= 0) {
+            return boundary.node;
+        }
+
+        if (offset >= textSize) {
+            return boundary.node.nextSibling();
+        }
+
+        const QString before = text.left(offset);
+        const QString selected = text.mid(offset);
+        parent.insertBefore(doc.createTextNode(before), boundary.node);
+        QDomNode selectedNode = parent.insertBefore(doc.createTextNode(selected), boundary.node);
+        parent.removeChild(boundary.node);
+        return selectedNode;
+    }
+
+    if (offset <= 0) {
+        return boundary.node.previousSibling();
+    }
+
+    if (offset >= textSize) {
+        return boundary.node;
+    }
+
+    const QString selected = text.left(offset);
+    const QString after = text.mid(offset);
+    QDomNode selectedNode = parent.insertBefore(doc.createTextNode(selected), boundary.node);
+    parent.insertBefore(doc.createTextNode(after), boundary.node);
+    parent.removeChild(boundary.node);
+    return selectedNode;
+}
+
+static QDomNode rangeStartNodeFromBoundary(QDomDocument &doc, const CfiBoundary &boundary)
+{
+    if (!isValidBoundary(boundary)) {
+        return {};
+    }
+
+    if (boundary.before) {
+        return boundary.node;
+    }
+
+    if (boundary.after) {
+        return boundary.node.nextSibling();
+    }
+
+    if (isTextLikeNode(boundary.node)) {
+        return splitTextRangeBoundary(doc, boundary, true);
+    }
+
+    return childAt(boundary.node, std::clamp(boundary.offset, 0, boundary.node.childNodes().size()));
+}
+
+static QDomNode rangeEndNodeFromBoundary(QDomDocument &doc, const CfiBoundary &boundary)
+{
+    if (!isValidBoundary(boundary)) {
+        return {};
+    }
+
+    if (boundary.before) {
+        return boundary.node.previousSibling();
+    }
+
+    if (boundary.after) {
+        return boundary.node;
+    }
+
+    if (isTextLikeNode(boundary.node)) {
+        return splitTextRangeBoundary(doc, boundary, false);
+    }
+
+    return childAt(boundary.node, std::clamp(boundary.offset, 0, boundary.node.childNodes().size()) - 1);
+}
+
+static bool insertBoundaryMarkerAtBoundary(QDomDocument &doc, const CfiBoundary &boundary, const QString &anchorId, const QString &anchorType)
+{
+    if (!isValidBoundary(boundary)) {
+        return false;
+    }
+
+    QDomElement marker = createAnnotationSpanElement(doc, anchorId, anchorType);
+
+    if (boundary.before || boundary.after) {
+        QDomNode parent = boundary.node.parentNode();
+        if (parent.isNull()) {
+            return false;
+        }
+
+        if (boundary.before) {
+            parent.insertBefore(marker, boundary.node);
+        } else {
+            parent.insertAfter(marker, boundary.node);
+        }
+        return true;
+    }
+
+    if (isTextLikeNode(boundary.node)) {
+        QDomNode parent = boundary.node.parentNode();
+        if (parent.isNull()) {
+            return false;
+        }
+
+        const QString text = boundary.node.nodeValue();
+        const int offset = std::clamp(boundary.offset, 0, static_cast<int>(text.size()));
+        const QString before = text.left(offset);
+        const QString after = text.mid(offset);
+
+        if (!before.isEmpty()) {
+            parent.insertBefore(doc.createTextNode(before), boundary.node);
+        }
+        parent.insertBefore(marker, boundary.node);
+        if (!after.isEmpty()) {
+            parent.insertBefore(doc.createTextNode(after), boundary.node);
+        }
+        parent.removeChild(boundary.node);
+        return true;
+    }
+
+    if (!isElementNode(boundary.node)) {
+        return false;
+    }
+
+    QDomNode node = boundary.node;
+    const int offset = std::clamp(boundary.offset, 0, node.childNodes().size());
+    const QDomNode referenceNode = childAt(node, offset);
+    if (referenceNode.isNull()) {
+        node.appendChild(marker);
+    } else {
+        node.insertBefore(marker, referenceNode);
+    }
+    return true;
+}
+
+static bool insertAnnotationBoundaryPair(QDomDocument &doc, const CfiBoundary &start, const CfiBoundary &end, const QString &anchorId)
+{
+    return insertBoundaryMarkerAtBoundary(doc, end, anchorId + QStringLiteral("_end"), QStringLiteral("annotation-end"))
+        && insertBoundaryMarkerAtBoundary(doc, start, anchorId + QStringLiteral("_begin"), QStringLiteral("annotation-begin"));
+}
+
+static QDomNode promoteRangeStartNode(QDomNode node)
+{
+    while (!node.isNull()) {
+        QDomNode parent = node.parentNode();
+        if (parent.isNull() || !canPromoteWholeElementIntoAnchor(parent) || !node.previousSibling().isNull()) {
+            break;
+        }
+
+        node = parent;
+    }
+
+    return node;
+}
+
+static QDomNode promoteRangeEndNode(QDomNode node)
+{
+    while (!node.isNull()) {
+        QDomNode parent = node.parentNode();
+        if (parent.isNull() || !canPromoteWholeElementIntoAnchor(parent) || !node.nextSibling().isNull()) {
+            break;
+        }
+
+        node = parent;
+    }
+
+    return node;
+}
+
+static bool collectSiblingRange(const QDomNode &startNode, const QDomNode &endNode, QList<QDomNode> &nodes)
+{
+    QDomNode node = startNode;
+    while (!node.isNull()) {
+        nodes.append(node);
+        if (node == endNode) {
+            return true;
+        }
+        node = node.nextSibling();
+    }
+
+    nodes.clear();
+    return false;
+}
+
+static bool wrapSiblingRange(QDomDocument &doc,
+                             const CfiBoundary &start,
+                             const CfiBoundary &end,
+                             const QString &anchorId,
+                             const QString &anchorType,
+                             QString *selectedText,
+                             const QString &href = QString())
+{
+    if (!isValidBoundary(start) || !isValidBoundary(end) || start.node == end.node) {
+        return false;
+    }
+
+    QDomNode startNode = promoteRangeStartNode(rangeStartNodeFromBoundary(doc, start));
+    QDomNode endNode = promoteRangeEndNode(rangeEndNodeFromBoundary(doc, end));
+    if (startNode.isNull() || endNode.isNull()) {
+        return false;
+    }
+
+    QDomNode parent = startNode.parentNode();
+    if (parent.isNull() || parent != endNode.parentNode()) {
+        return false;
+    }
+
+    QList<QDomNode> nodesToWrap;
+    if (!collectSiblingRange(startNode, endNode, nodesToWrap)) {
+        return false;
+    }
+
+    QString rangeText;
+    for (const QDomNode &node : std::as_const(nodesToWrap)) {
+        if (!canMoveNodeIntoAnchor(node)) {
+            return false;
+        }
+        appendPlainText(node, rangeText);
+    }
+
+    if (rangeText.isEmpty()) {
+        return false;
+    }
+
+    QDomElement anchor = createAnchorElement(doc, QStringLiteral("a"), anchorId, anchorType, href);
+    parent.insertBefore(anchor, startNode);
+
+    for (const QDomNode &node : std::as_const(nodesToWrap)) {
+        anchor.appendChild(node);
+    }
+
+    if (selectedText) {
+        *selectedText = rangeText;
+    }
+
+    return true;
+}
+
+static void copyDirectoryReplacingFile(KZip &outZip,
+                                       const KArchiveDirectory *dir,
+                                       const QString &prefix,
+                                       const QString &replacementPath,
+                                       const QByteArray &replacementData,
+                                       bool &replaced)
+{
+    if (!dir) {
+        return;
+    }
+
+    const QStringList entries = dir->entries();
+    for (const QString &entryName : entries) {
+        const KArchiveEntry *entry = dir->entry(entryName);
+        if (!entry) {
+            continue;
+        }
+
+        const QString fullPath = prefix.isEmpty() ? entryName : prefix + QStringLiteral("/") + entryName;
+        const QString cleanPath = QDir::cleanPath(fullPath);
+
+        if (cleanPath == QStringLiteral("mimetype")) {
+            continue;
+        }
+
+        if (entry->isDirectory()) {
+            const auto *subdir = dynamic_cast<const KArchiveDirectory *>(entry);
+            if (subdir) {
+                copyDirectoryReplacingFile(outZip, subdir, cleanPath, replacementPath, replacementData, replaced);
+            }
+            continue;
+        }
+
+        const auto *file = dynamic_cast<const KArchiveFile *>(entry);
+        if (!file) {
+            continue;
+        }
+
+        if (cleanPath == replacementPath) {
+            outZip.writeFile(cleanPath, replacementData);
+            replaced = true;
+            continue;
+        }
+
+        QScopedPointer<QIODevice> dev(file->createDevice());
+        if (!dev) {
+            continue;
+        }
+
+        outZip.writeFile(cleanPath, dev->readAll());
+    }
+}
+
+static bool
+writeEpubReplacingFile(const QString &outputPath, const KArchiveDirectory *rootFolder, const QString &replacementPath, const QByteArray &replacementData)
+{
+    const QFileInfo outputInfo(outputPath);
+    QTemporaryFile tempFile(outputInfo.dir().filePath(outputInfo.fileName() + QStringLiteral(".XXXXXX")));
+    tempFile.setAutoRemove(false);
+    if (!tempFile.open()) {
+        qWarning() << "Unable to create temporary anchored EPUB" << outputPath << tempFile.errorString();
+        return false;
+    }
+
+    const QString tempPath = tempFile.fileName();
+    tempFile.close();
+
+    KZip outZip(tempPath);
+
+    if (!outZip.open(QIODevice::WriteOnly)) {
+        qWarning() << "Unable to create anchored EPUB" << tempPath;
+        QFile::remove(tempPath);
+        return false;
+    }
+
+    outZip.writeFile(QStringLiteral("mimetype"), QByteArrayLiteral("application/epub+zip"));
+
+    bool replaced = false;
+    copyDirectoryReplacingFile(outZip, rootFolder, QString(), replacementPath, replacementData, replaced);
+    outZip.close();
+
+    if (!replaced) {
+        qWarning() << "Unable to find replacement document in EPUB" << replacementPath;
+        QFile::remove(tempPath);
+        return false;
+    }
+
+    QString backupPath;
+    if (QFileInfo::exists(outputPath)) {
+        backupPath = outputPath + QStringLiteral(".bak-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+        if (!QFile::rename(outputPath, backupPath)) {
+            qWarning() << "Unable to move existing anchored EPUB aside" << outputPath << backupPath;
+            QFile::remove(tempPath);
+            return false;
+        }
+    }
+
+    if (!QFile::rename(tempPath, outputPath)) {
+        qWarning() << "Unable to move anchored EPUB into place" << tempPath << outputPath;
+        if (!backupPath.isEmpty()) {
+            QFile::rename(backupPath, outputPath);
+        }
+        QFile::remove(tempPath);
+        return false;
+    }
+
+    if (!backupPath.isEmpty()) {
+        QFile::remove(backupPath);
+    }
+
+    return true;
+}
+
+static QString anchoredEpubOutputPath(const QString &filename, const QString &bookId)
+{
+    QFileInfo fileInfo(filename);
+    QString fileStem = bookId.trimmed();
+    if (fileStem.isEmpty()) {
+        fileStem = fileInfo.completeBaseName();
+    }
+
+    fileStem.replace(QRegularExpression(QStringLiteral("[/\\\\]")), QStringLiteral("_"));
+    return fileInfo.dir().filePath(fileStem + QStringLiteral(".anchored.epub"));
+}
+
+using XmlNamespaceDeclarations = QVector<QPair<QString, QString>>;
+
+static XmlNamespaceDeclarations rootNamespaceDeclarations(const QByteArray &data)
+{
+    XmlNamespaceDeclarations declarations;
+    QXmlStreamReader reader(data);
+    while (!reader.atEnd()) {
+        if (reader.readNext() != QXmlStreamReader::StartElement) {
+            continue;
+        }
+
+        for (const QXmlStreamNamespaceDeclaration &declaration : reader.namespaceDeclarations()) {
+            declarations.append({declaration.prefix().toString(), declaration.namespaceUri().toString()});
+        }
+        break;
+    }
+
+    return declarations;
+}
+
+static void restoreRootNamespaceDeclarations(QDomDocument &doc, const XmlNamespaceDeclarations &declarations)
+{
+    QDomElement root = doc.documentElement();
+    if (root.isNull()) {
+        return;
+    }
+
+    for (const auto &[prefix, namespaceUri] : declarations) {
+        if (namespaceUri.isEmpty()) {
+            continue;
+        }
+
+        const QString attributeName = prefix.isEmpty() ? QStringLiteral("xmlns") : QStringLiteral("xmlns:") + prefix;
+        root.setAttribute(attributeName, namespaceUri);
+    }
+}
+
+static bool setDomContentWithNamespaces(QDomDocument &doc, const QByteArray &data)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    return static_cast<bool>(doc.setContent(data, QDomDocument::ParseOption::UseNamespaceProcessing));
+#else
+    return doc.setContent(data, true);
+#endif
+}
+
+static bool setDomContentPreservingMarkup(QDomDocument &doc, const QByteArray &data)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    return static_cast<bool>(doc.setContent(data));
+#else
+    return doc.setContent(data);
+#endif
+}
+
+static void collectArchiveFilePaths(const KArchiveDirectory *dir, const QString &prefix, QStringList &paths)
+{
+    if (!dir) {
+        return;
+    }
+
+    const QStringList entries = dir->entries();
+    for (const QString &entryName : entries) {
+        const KArchiveEntry *entry = dir->entry(entryName);
+        if (!entry) {
+            continue;
+        }
+
+        const QString fullPath = prefix.isEmpty() ? entryName : prefix + QStringLiteral("/") + entryName;
+        const QString cleanPath = QDir::cleanPath(fullPath);
+
+        if (entry->isDirectory()) {
+            const auto *subdir = dynamic_cast<const KArchiveDirectory *>(entry);
+            if (subdir) {
+                collectArchiveFilePaths(subdir, cleanPath, paths);
+            }
+            continue;
+        }
+
+        if (entry->isFile()) {
+            paths.append(cleanPath);
+        }
+    }
+}
+
+static bool addDeviceDataToHash(QIODevice &device, QCryptographicHash &hash)
+{
+    QByteArray buffer;
+    buffer.resize(64 * 1024);
+    while (true) {
+        const qint64 bytesRead = device.read(buffer.data(), buffer.size());
+        if (bytesRead > 0) {
+            hash.addData(QByteArrayView(buffer.constData(), static_cast<qsizetype>(bytesRead)));
+            continue;
+        }
+
+        if (bytesRead < 0) {
+            return false;
+        }
+
+        return device.atEnd();
+    }
+}
+
+static void addContentHashField(QCryptographicHash &hash, const QByteArray &field)
+{
+    hash.addData(QByteArray::number(field.size()));
+    hash.addData(QByteArrayLiteral("\n"));
+    hash.addData(field);
+    hash.addData(QByteArrayLiteral("\n"));
+}
+
+static bool addContentHashDeviceField(QCryptographicHash &hash, QIODevice &device, qint64 size)
+{
+    hash.addData(QByteArray::number(size));
+    hash.addData(QByteArrayLiteral("\n"));
+    if (!addDeviceDataToHash(device, hash)) {
+        return false;
+    }
+    hash.addData(QByteArrayLiteral("\n"));
+
+    return true;
 }
 
 EPubContainer::EPubContainer(QObject *parent)
@@ -327,7 +1895,68 @@ const QHash<QString, EpubItem> &EPubContainer::manifestItems() const
     return m_items;
 }
 
+QString EPubContainer::getFileHash() const
+{
+    QFile file(m_filename);
+    if (m_filename.isEmpty() || !file.open(QIODevice::ReadOnly)) {
+        qWarning() << "Unable to open EPUB file for hashing" << m_filename << file.errorString();
+        return {};
+    }
+
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    if (!addDeviceDataToHash(file, hash)) {
+        qWarning() << "Unable to read EPUB file for hashing" << m_filename << file.errorString();
+        return {};
+    }
+
+    return QString::fromLatin1(hash.result().toHex());
+}
+
+QString EPubContainer::getContentHash() const
+{
+    if (!m_rootFolder) {
+        qWarning() << "No EPUB root folder available for content hash";
+        return {};
+    }
+
+    QStringList paths;
+    collectArchiveFilePaths(m_rootFolder, QString(), paths);
+    paths.sort(Qt::CaseSensitive);
+
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(QByteArrayLiteral("arianna-epub-content-sha256-v1\n"));
+
+    for (const QString &path : std::as_const(paths)) {
+        const KArchiveFile *archiveFile = file(path);
+        if (!archiveFile) {
+            qWarning() << "Unable to read EPUB content file for hashing" << path;
+            return {};
+        }
+
+        QScopedPointer<QIODevice> device(archiveFile->createDevice());
+        if (!device) {
+            qWarning() << "Unable to open EPUB content file for hashing" << path;
+            return {};
+        }
+
+        addContentHashField(hash, path.toUtf8());
+        if (!addContentHashDeviceField(hash, *device, archiveFile->size())) {
+            qWarning() << "Unable to read EPUB content file for hashing" << path << device->errorString();
+            return {};
+        }
+    }
+
+    return QString::fromLatin1(hash.result().toHex());
+}
+
 QByteArray EPubContainer::createServerReadyEpub(const ResourceMap &resourceMap) const
+{
+    ServerReadyEpubOptions options;
+    options.resourceMap = resourceMap;
+    return createServerReadyEpub(options);
+}
+
+QByteArray EPubContainer::createServerReadyEpub(const ServerReadyEpubOptions &options) const
 {
     if (!m_rootFolder) {
         qWarning() << "No EPUB root folder available";
@@ -351,14 +1980,197 @@ QByteArray EPubContainer::createServerReadyEpub(const ResourceMap &resourceMap) 
 
     outZip.writeFile(QStringLiteral("mimetype"), QByteArrayLiteral("application/epub+zip"));
 
-    copyDirectoryServerReady(outZip, m_rootFolder, QString(), resourceMap);
+    ServerReadyCopyContext context;
+    context.resourceMap = options.resourceMap;
+    context.includeReferences = options.includeReferences;
+    context.opfPath = m_contentFilePath;
+    context.references = options.references;
+    if (context.includeReferences && !context.opfPath.isEmpty()) {
+        const QString opfFolder = QFileInfo(context.opfPath).path();
+        context.referencesPath = QDir::cleanPath(opfFolder + QStringLiteral("/references.xhtml"));
+        for (const EpubReference &reference : std::as_const(context.references)) {
+            if (!reference.sourceAnchorId.isEmpty()) {
+                context.referenceBySourceAnchor.insert(reference.sourceAnchorId, reference);
+            }
+        }
+    }
+
+    copyDirectoryServerReady(outZip, m_rootFolder, QString(), context);
+
+    if (context.includeReferences && !context.referencesPath.isEmpty()) {
+        outZip.writeFile(context.referencesPath, createReferencesDocument(context));
+    }
 
     outZip.close();
     buffer.close();
 
-    qDebug() << "Created server-ready EPUB with" << resourceMap.size() << "externalized resources";
+    qDebug() << "Created server-ready EPUB with" << context.resourceMap.size() << "externalized resources and" << context.references.size()
+             << "included references";
 
     return result;
+}
+
+QString EPubContainer::createAnchor(const QString &cfi)
+{
+    return createRangeAnchor(cfi, QStringLiteral("crossref"), QString(), QStringLiteral("cross-reference"));
+}
+
+QString EPubContainer::createAnchor(const QString &cfi, const QString &anchorType)
+{
+    return createRangeAnchor(cfi, anchorType, QString(), anchorType.isEmpty() ? QStringLiteral("target") : anchorType);
+}
+
+QString EPubContainer::createBookrefAnchor(const QString &cfi, const QString &targetLocation, const bool isCrossReference)
+{
+    const QString href = isCrossReference ? QString() : targetLocation.trimmed();
+    if (!isCrossReference && href.isEmpty()) {
+        qWarning() << "Unable to create intra-book reference anchor without target location";
+        return {};
+    }
+
+    return createRangeAnchor(cfi,
+                             isCrossReference ? QStringLiteral("crossref") : QString(),
+                             href,
+                             isCrossReference ? QStringLiteral("cross-reference") : QStringLiteral("intra-book reference"));
+}
+
+QString EPubContainer::createRangeAnchor(const QString &cfi, const QString &anchorType, const QString &href, const QString &debugLabel)
+{
+    if (!m_rootFolder) {
+        qWarning() << "No EPUB root folder available";
+        return {};
+    }
+
+    ParsedCfi parsed = parseCfi(cfi);
+    if (!parsed.isRange || parsed.parent.isEmpty()) {
+        qWarning() << "Unable to create anchor from non-range CFI" << cfi;
+        return {};
+    }
+
+    const int spineIndex = spineIndexFromTopCfiPath(parsed.parent.constFirst());
+    if (spineIndex < 0 || spineIndex >= m_orderedItems.size()) {
+        qWarning() << "Unable to resolve spine item for CFI" << cfi;
+        return {};
+    }
+
+    const QString itemId = m_orderedItems.at(spineIndex);
+    const EpubItem item = m_items.value(itemId);
+    if (!isDocumentItem(item)) {
+        qWarning() << "Unable to create anchor in non-document EPUB item" << item.path << item.mimetype;
+        return {};
+    }
+
+    parsed.parent.removeFirst();
+    const CfiPath startPath = collapseCfiRangeSide(parsed.parent, parsed.start);
+    const CfiPath endPath = collapseCfiRangeSide(parsed.parent, parsed.end);
+
+    const QByteArray data = readData(item.path);
+    if (data.isEmpty()) {
+        qWarning() << "Unable to read EPUB document for anchor" << item.path;
+        return {};
+    }
+
+    const XmlNamespaceDeclarations rootNamespaces = rootNamespaceDeclarations(data);
+    QDomDocument doc;
+    if (!setDomContentPreservingMarkup(doc, data)) {
+        qWarning() << "Unable to parse EPUB document for anchor" << item.path;
+        return {};
+    }
+    restoreRootNamespaceDeclarations(doc, rootNamespaces);
+
+    const CfiBoundary startBoundary = resolveCfiBoundary(doc, startPath);
+    const CfiBoundary endBoundary = resolveCfiBoundary(doc, endPath);
+
+    const QString anchorId = QStringLiteral("uuid_") + QUuid::createUuidV7().toString(QUuid::WithoutBraces);
+    QString anchorHref;
+    if (!href.isEmpty()) {
+        anchorHref = href.startsWith(QStringLiteral("epubcfi(")) ? href : relativePathFrom(item.path, href);
+    }
+
+    QString selectedText;
+    if (!wrapSingleTextNodeRange(doc, startBoundary, endBoundary, anchorId, anchorType, &selectedText, QStringLiteral("a"), anchorHref)
+        && !wrapSiblingRange(doc, startBoundary, endBoundary, anchorId, anchorType, &selectedText, anchorHref)) {
+        qWarning() << "Unable to wrap CFI range with anchor" << cfi << "in" << item.path;
+        return {};
+    }
+
+    const QString bookId = m_metadata.value(QStringLiteral("unique-identifier")).value(0, QFileInfo(m_filename).completeBaseName());
+    const QString outputPath = anchoredEpubOutputPath(m_filename, bookId);
+    if (!writeEpubReplacingFile(outputPath, m_rootFolder, item.path, doc.toByteArray())) {
+        qWarning() << "Unable to write anchored EPUB" << outputPath;
+        return {};
+    }
+
+    qDebug() << "Created" << debugLabel << "anchor" << anchorId << "for" << selectedText << "in" << outputPath;
+    return anchorId;
+}
+
+QString EPubContainer::createAnnotationAnchor(const QString &cfi)
+{
+    if (!m_rootFolder) {
+        qWarning() << "No EPUB root folder available";
+        return {};
+    }
+
+    ParsedCfi parsed = parseCfi(cfi);
+    if (!parsed.isRange || parsed.parent.isEmpty()) {
+        qWarning() << "Unable to create annotation anchor from non-range CFI" << cfi;
+        return {};
+    }
+
+    const int spineIndex = spineIndexFromTopCfiPath(parsed.parent.constFirst());
+    if (spineIndex < 0 || spineIndex >= m_orderedItems.size()) {
+        qWarning() << "Unable to resolve spine item for annotation CFI" << cfi;
+        return {};
+    }
+
+    const QString itemId = m_orderedItems.at(spineIndex);
+    const EpubItem item = m_items.value(itemId);
+    if (!isDocumentItem(item)) {
+        qWarning() << "Unable to create annotation anchor in non-document EPUB item" << item.path << item.mimetype;
+        return {};
+    }
+
+    parsed.parent.removeFirst();
+    const CfiPath startPath = collapseCfiRangeSide(parsed.parent, parsed.start);
+    const CfiPath endPath = collapseCfiRangeSide(parsed.parent, parsed.end);
+
+    const QByteArray data = readData(item.path);
+    if (data.isEmpty()) {
+        qWarning() << "Unable to read EPUB document for annotation anchor" << item.path;
+        return {};
+    }
+
+    const XmlNamespaceDeclarations rootNamespaces = rootNamespaceDeclarations(data);
+    QDomDocument doc;
+    if (!setDomContentPreservingMarkup(doc, data)) {
+        qWarning() << "Unable to parse EPUB document for annotation anchor" << item.path;
+        return {};
+    }
+    restoreRootNamespaceDeclarations(doc, rootNamespaces);
+
+    const CfiBoundary startBoundary = resolveCfiBoundary(doc, startPath);
+    const CfiBoundary endBoundary = resolveCfiBoundary(doc, endPath);
+
+    const QString anchorId = QStringLiteral("uuid_") + QUuid::createUuidV7().toString(QUuid::WithoutBraces);
+    QString selectedText;
+    const bool anchored = annotateExactInlineElementRange(startBoundary, endBoundary, anchorId, QStringLiteral("annotation"), &selectedText)
+        || wrapSingleTextNodeRange(doc, startBoundary, endBoundary, anchorId, QStringLiteral("annotation"), &selectedText, QStringLiteral("span"))
+        || insertAnnotationBoundaryPair(doc, startBoundary, endBoundary, anchorId);
+    if (!anchored) {
+        qWarning() << "Unable to create annotation anchor for CFI range" << cfi << "in" << item.path;
+        return {};
+    }
+
+    const QString bookId = m_metadata.value(QStringLiteral("unique-identifier")).value(0, QFileInfo(m_filename).completeBaseName());
+    const QString outputPath = anchoredEpubOutputPath(m_filename, bookId);
+    if (!writeEpubReplacingFile(outputPath, m_rootFolder, item.path, doc.toByteArray())) {
+        qWarning() << "Unable to write annotation anchored EPUB" << outputPath;
+        return {};
+    }
+
+    qDebug() << "Created annotation anchor" << anchorId << "for" << selectedText << "in" << outputPath;
+    return anchorId;
 }
 
 QSharedPointer<QIODevice> EPubContainer::ioDevice(const QString &path)
@@ -380,13 +2192,90 @@ QImage EPubContainer::image(const QString &id)
         return {};
     }
 
-    const EpubItem &item = m_items.value(id);
+    const EpubItem item = m_items.value(id);
 
-    if (!QImageReader::supportedMimeTypes().contains(item.mimetype)) {
+    if (!isSupportedImageItem(item)) {
         qWarning() << "Asked for unsupported type" << item.mimetype;
         return {};
     }
 
+    return imageFromItem(id);
+}
+
+QImage EPubContainer::coverImage()
+{
+    auto imageForItem = [this](const QString &id) -> QImage {
+        if (!m_items.contains(id)) {
+            return {};
+        }
+
+        const EpubItem item = m_items.value(id);
+        if (isSupportedImageItem(item)) {
+            return imageFromItem(id);
+        }
+        if (isDocumentItem(item)) {
+            return coverImageFromDocument(item.path);
+        }
+
+        return {};
+    };
+
+    QStringList candidates;
+    auto addCandidate = [&candidates](const QString &id) {
+        if (!id.isEmpty() && !candidates.contains(id)) {
+            candidates.append(id);
+        }
+    };
+
+    for (const QString &coverReference : std::as_const(m_metadata[QStringLiteral("cover")])) {
+        const QString trimmedReference = coverReference.trimmed();
+        addCandidate(trimmedReference);
+        addCandidate(itemIdForPath(trimmedReference));
+    }
+
+    for (const QString &id : std::as_const(candidates)) {
+        const QImage cover = imageForItem(id);
+        if (!cover.isNull()) {
+            return cover;
+        }
+    }
+
+    const QString guideCoverTarget = m_standardReferences.value(EpubPageReference::CoverPage).target;
+    if (!guideCoverTarget.isEmpty()) {
+        const QString guideCoverId = itemIdForPath(guideCoverTarget);
+        const QImage guideCover = imageForItem(guideCoverId);
+        if (!guideCover.isNull()) {
+            return guideCover;
+        }
+
+        const QImage guideDocumentCover = coverImageFromDocument(pathWithoutFragment(guideCoverTarget));
+        if (!guideDocumentCover.isNull()) {
+            return guideDocumentCover;
+        }
+    }
+
+    for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+        if (!isSupportedImageItem(it.value())) {
+            continue;
+        }
+
+        const QString coverHint = it.key() + QLatin1Char(' ') + it.value().path;
+        if (!coverHint.contains(QStringLiteral("cover"), Qt::CaseInsensitive)) {
+            continue;
+        }
+
+        const QImage cover = imageFromItem(it.key());
+        if (!cover.isNull()) {
+            return cover;
+        }
+    }
+
+    return {};
+}
+
+QImage EPubContainer::imageFromItem(const QString &id)
+{
+    const EpubItem item = m_items.value(id);
     QSharedPointer<QIODevice> device = ioDevice(item.path);
 
     if (!device) {
@@ -394,6 +2283,43 @@ QImage EPubContainer::image(const QString &id)
     }
 
     return QImage::fromData(device->readAll());
+}
+
+QImage EPubContainer::coverImageFromDocument(const QString &path)
+{
+    const QByteArray data = readData(pathWithoutFragment(path));
+    if (data.isEmpty()) {
+        return {};
+    }
+
+    QDomDocument document;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    if (!document.setContent(data, QDomDocument::ParseOption::UseNamespaceProcessing)) {
+        return {};
+    }
+#else
+    if (!document.setContent(data, true)) {
+        return {};
+    }
+#endif
+
+    QStringList imageReferences;
+    collectImageReferences(document.documentElement(), imageReferences);
+
+    for (const QString &reference : std::as_const(imageReferences)) {
+        const QString imagePath = resolveRelativePath(pathWithoutFragment(path), reference);
+        const QString imageId = itemIdForPath(imagePath);
+        if (imageId.isEmpty()) {
+            continue;
+        }
+
+        const QImage cover = imageFromItem(imageId);
+        if (!cover.isNull()) {
+            return cover;
+        }
+    }
+
+    return {};
 }
 
 QByteArray EPubContainer::readData(const QString &path)
@@ -478,6 +2404,8 @@ bool EPubContainer::parseContainer()
 
 bool EPubContainer::parseContentFile(const QString &filepath)
 {
+    m_contentFilePath = filepath;
+
     const KArchiveFile *rootFile = file(filepath);
     if (!rootFile) {
         Q_EMIT errorOccured(i18n("Malformed metadata, unable to get content metadata path"));
@@ -559,7 +2487,7 @@ bool EPubContainer::parseContentFile(const QString &filepath)
 
         QDomNodeList guideItemList = guideElement.elementsByTagName(QStringLiteral("reference"));
         for (int j = 0; j < guideItemList.count(); j++) {
-            parseGuideItem(guideItemList.at(j));
+            parseGuideItem(guideItemList.at(j), contentFileFolder);
         }
     }
 
@@ -687,19 +2615,22 @@ bool EPubContainer::parseManifestItem(const QDomNode &manifestNode, const QStrin
     }
 
     // Resolve relative paths
-    path = QDir::cleanPath(currentFolder + path);
+    path = QDir::cleanPath(currentFolder + archivePathFromUri(path));
 
     EpubItem item;
     item.mimetype = type.toUtf8();
     item.path = path;
+    item.properties = properties;
     m_items[id] = item;
 
-    if (properties.contains(QStringLiteral("cover-image")) && m_metadata.value(QStringLiteral("cover")).isEmpty()) {
-        m_metadata[QStringLiteral("cover")] = QStringList{id};
+    if (properties.contains(QStringLiteral("cover-image")) && !m_metadata[QStringLiteral("cover")].contains(id)) {
+        m_metadata[QStringLiteral("cover")].append(id);
     }
 
-    static QSet<QString> documentTypes(
-        {QStringLiteral("text/x-oeb1-document"), QStringLiteral("application/x-dtbook+xml"), QStringLiteral("application/xhtml+xml")});
+    static QSet<QString> documentTypes({QStringLiteral("text/x-oeb1-document"),
+                                        QStringLiteral("application/x-dtbook+xml"),
+                                        QStringLiteral("application/xhtml+xml"),
+                                        QStringLiteral("text/html")});
     // All items not listed in the spine should be in this
     if (documentTypes.contains(type)) {
         m_unorderedItems.insert(id);
@@ -734,17 +2665,18 @@ bool EPubContainer::parseSpineItem(const QDomNode &spineNode)
     return true;
 }
 
-bool EPubContainer::parseGuideItem(const QDomNode &guideItem)
+bool EPubContainer::parseGuideItem(const QDomNode &guideItem, const QString &currentFolder)
 {
     QDomElement guideElement = guideItem.toElement();
     QString target = guideElement.attribute(QStringLiteral("href"));
     QString title = guideElement.attribute(QStringLiteral("title"));
     QString type = guideElement.attribute(QStringLiteral("type"));
 
-    if (target.isEmpty() || title.isEmpty() || type.isEmpty()) {
+    if (target.isEmpty() || type.isEmpty()) {
         qWarning() << "Invalid guide item" << target << title << type;
         return false;
     }
+    target = resolveRelativePath(currentFolder + QStringLiteral("content.opf"), target);
 
     EpubPageReference reference;
     reference.target = target;
@@ -760,7 +2692,7 @@ bool EPubContainer::parseGuideItem(const QDomNode &guideItem)
     return true;
 }
 
-const KArchiveFile *EPubContainer::file(const QString &path)
+const KArchiveFile *EPubContainer::file(const QString &path) const
 {
     if (path.isEmpty()) {
         return nullptr;
@@ -823,42 +2755,564 @@ const KArchiveFile *EPubContainer::file(const QString &path)
     }
     return file;
 }
+void EPubContainer::extractTargetAnchors()
+{
+    if (m_targetAnchorsExtracted) {
+        return;
+    }
+
+    m_targetAnchorsExtracted = true;
+    m_targetAnchors.clear();
+    m_targetAnchorIndex.clear();
+
+    qDebug() << "Extracting target anchors from EPUB";
+    for (auto it = m_items.cbegin(); it != m_items.cend(); ++it) {
+        if (it->mimetype != "application/xhtml+xml")
+            continue;
+
+        extractTargetAnchorsFromDocument(it.key(), it->path);
+    }
+}
+
+QString buildCFI(QDomNode node)
+{
+    QList<int> steps;
+
+    while (!node.parentNode().isNull()) {
+        int index = 0;
+
+        QDomNode sibling = node.previousSibling();
+
+        while (!sibling.isNull()) {
+            if (sibling.isElement())
+                ++index;
+
+            sibling = sibling.previousSibling();
+        }
+
+        steps.prepend((index + 1) * 2);
+
+        node = node.parentNode();
+    }
+
+    QString result;
+
+    for (int s : steps)
+        result += QStringLiteral("/") + QString::number(s);
+    return result;
+}
+
+static QString buildSpineCFI(int spineIndex)
+{
+    return QStringLiteral("/6/%1").arg((spineIndex + 1) * 2);
+}
+
+static void appendNodeText(const QDomNode &node, QString &text, const int maxLength)
+{
+    if (text.size() >= maxLength) {
+        return;
+    }
+
+    if (node.isText() || node.isCDATASection()) {
+        text += node.nodeValue();
+        return;
+    }
+
+    const QDomElement element = node.toElement();
+    const QString localName = element.localName().isEmpty() ? element.tagName() : element.localName();
+    if (localName == QStringLiteral("script") || localName == QStringLiteral("style")) {
+        return;
+    }
+
+    QDomNode child = node.firstChild();
+    while (!child.isNull() && text.size() < maxLength) {
+        appendNodeText(child, text, maxLength);
+        child = child.nextSibling();
+    }
+}
+
+static QString textPreview(const QDomNode &node)
+{
+    QString text;
+    appendNodeText(node, text, 600);
+    return text.simplified().left(300);
+}
+
+static QDomNode documentPreviewNode(const QDomDocument &doc)
+{
+    const QDomNodeList bodies = doc.elementsByTagName(QStringLiteral("body"));
+    if (!bodies.isEmpty()) {
+        return bodies.at(0);
+    }
+
+    return doc.documentElement();
+}
+
+static QString elementTitle(const QDomElement &element)
+{
+    QString title = element.attribute(QStringLiteral("title")).trimmed();
+    if (title.isEmpty()) {
+        title = element.attribute(QStringLiteral("aria-label")).trimmed();
+    }
+    if (title.isEmpty()) {
+        title = textPreview(element).left(80);
+    }
+
+    return title;
+}
+
+static QString elementLocalName(const QDomElement &element)
+{
+    return (element.localName().isEmpty() ? element.tagName() : element.localName()).toLower();
+}
+
+static bool isCrossReferenceSourceAnchor(const QDomElement &element)
+{
+    return element.attribute(QStringLiteral("data-role")) == QStringLiteral("anchor")
+        && element.attribute(QStringLiteral("data-anchor-type")) == QStringLiteral("crossref");
+}
+
+static bool isReferenceableStructuralElement(const QDomElement &element)
+{
+    if (element.isNull() || isCrossReferenceSourceAnchor(element)) {
+        return false;
+    }
+
+    const QString localName = elementLocalName(element);
+    static const QSet<QString> excludedNames = {
+        QStringLiteral("html"),
+        QStringLiteral("head"),
+        QStringLiteral("title"),
+        QStringLiteral("meta"),
+        QStringLiteral("link"),
+        QStringLiteral("script"),
+        QStringLiteral("style"),
+        QStringLiteral("audio"),
+        QStringLiteral("video"),
+        QStringLiteral("source"),
+    };
+    if (excludedNames.contains(localName)) {
+        return false;
+    }
+
+    static const QSet<QString> structuralNames = {
+        QStringLiteral("section"),    QStringLiteral("article"), QStringLiteral("aside"),  QStringLiteral("nav"),        QStringLiteral("header"),
+        QStringLiteral("footer"),     QStringLiteral("main"),    QStringLiteral("div"),    QStringLiteral("h1"),         QStringLiteral("h2"),
+        QStringLiteral("h3"),         QStringLiteral("h4"),      QStringLiteral("h5"),     QStringLiteral("h6"),         QStringLiteral("p"),
+        QStringLiteral("blockquote"), QStringLiteral("pre"),     QStringLiteral("figure"), QStringLiteral("figcaption"), QStringLiteral("li"),
+        QStringLiteral("dt"),         QStringLiteral("dd"),      QStringLiteral("table"),  QStringLiteral("caption"),    QStringLiteral("tr"),
+        QStringLiteral("th"),         QStringLiteral("td"),
+    };
+
+    if (structuralNames.contains(localName)) {
+        return !textPreview(element).isEmpty();
+    }
+
+    return !element.attribute(QStringLiteral("epub:type")).trimmed().isEmpty() || !element.attribute(QStringLiteral("role")).trimmed().isEmpty();
+}
+
+static QString referenceableTargetType(const QDomElement &element)
+{
+    const QString localName = elementLocalName(element);
+    if (localName.size() == 2 && localName.startsWith(QLatin1Char('h')) && localName.at(1).isDigit()) {
+        return QStringLiteral("heading");
+    }
+    if (localName == QStringLiteral("p")) {
+        return QStringLiteral("paragraph");
+    }
+    if (localName == QStringLiteral("li") || localName == QStringLiteral("dt") || localName == QStringLiteral("dd")) {
+        return QStringLiteral("list-item");
+    }
+    if (localName == QStringLiteral("body")) {
+        return QStringLiteral("document");
+    }
+
+    return QStringLiteral("cfi");
+}
+
+static void appendReferenceableTarget(QVector<TargetAnchorInfo> &targets, QSet<QString> &seenLocations, TargetAnchorInfo target)
+{
+    if (target.location.isEmpty() || seenLocations.contains(target.location)) {
+        return;
+    }
+
+    if (target.ref.isEmpty()) {
+        target.ref = target.location;
+    }
+    if (target.title.isEmpty()) {
+        target.title = target.location;
+    }
+
+    seenLocations.insert(target.location);
+    targets.append(target);
+}
+
+void EPubContainer::extractNavigationTargetsFromDocument(const QString &itemId,
+                                                         const QString &path,
+                                                         QVector<TargetAnchorInfo> &targets,
+                                                         QSet<QString> &seenLocations)
+{
+    const QByteArray data = readData(path);
+    if (data.isEmpty()) {
+        return;
+    }
+
+    QDomDocument doc;
+    if (!setDomContentWithNamespaces(doc, data)) {
+        return;
+    }
+
+    const QString bookId = m_metadata[QStringLiteral("unique-identifier")].value(0);
+    std::function<void(const QDomNode &)> visit = [&](const QDomNode &node) {
+        const QDomElement element = node.toElement();
+        if (!element.isNull()) {
+            const QString localName = elementLocalName(element);
+            const QString href = element.attribute(QStringLiteral("href"));
+            if ((localName == QStringLiteral("a") || localName == QStringLiteral("area")) && !href.isEmpty()) {
+                const QString location = resolveReferenceTarget(path, href);
+                const QString targetItemId = itemIdForPath(location);
+                if (!location.isEmpty() && (!targetItemId.isEmpty() || location.startsWith(QStringLiteral("epubcfi(")))) {
+                    TargetAnchorInfo target;
+                    target.bookId = bookId;
+                    target.ref = location;
+                    target.file = targetItemId.isEmpty() ? itemId : targetItemId;
+                    target.location = location;
+                    target.previewHtml = textPreview(element);
+                    target.title = elementTitle(element);
+                    target.type = QStringLiteral("navigation");
+                    appendReferenceableTarget(targets, seenLocations, target);
+                }
+            }
+        }
+
+        QDomNode child = node.firstChild();
+        while (!child.isNull()) {
+            visit(child);
+            child = child.nextSibling();
+        }
+    };
+
+    visit(doc.documentElement());
+}
+
+static QString ncxLabelForContentElement(const QDomElement &content)
+{
+    QDomNode parent = content.parentNode();
+    while (!parent.isNull()) {
+        const QDomElement parentElement = parent.toElement();
+        const QString parentLocalName = elementLocalName(parentElement);
+        if (parentLocalName == QStringLiteral("navpoint") || parentLocalName == QStringLiteral("pagetarget")
+            || parentLocalName == QStringLiteral("navtarget")) {
+            const QDomNodeList labels = parentElement.elementsByTagName(QStringLiteral("navLabel"));
+            if (!labels.isEmpty()) {
+                const QString label = textPreview(labels.at(0));
+                if (!label.isEmpty()) {
+                    return label;
+                }
+            }
+
+            return textPreview(parentElement);
+        }
+
+        parent = parent.parentNode();
+    }
+
+    return {};
+}
+
+void EPubContainer::extractNcxTargetsFromDocument(const QString &itemId, const QString &path, QVector<TargetAnchorInfo> &targets, QSet<QString> &seenLocations)
+{
+    const QByteArray data = readData(path);
+    if (data.isEmpty()) {
+        return;
+    }
+
+    QDomDocument doc;
+    if (!setDomContentWithNamespaces(doc, data)) {
+        return;
+    }
+
+    const QString bookId = m_metadata[QStringLiteral("unique-identifier")].value(0);
+    const QDomNodeList contentNodes = doc.elementsByTagName(QStringLiteral("content"));
+    for (int i = 0; i < contentNodes.size(); ++i) {
+        const QDomElement content = contentNodes.at(i).toElement();
+        if (content.isNull()) {
+            continue;
+        }
+
+        const QString location = resolveReferenceTarget(path, content.attribute(QStringLiteral("src")));
+        const QString targetItemId = itemIdForPath(location);
+        if (location.isEmpty() || (targetItemId.isEmpty() && !location.startsWith(QStringLiteral("epubcfi(")))) {
+            continue;
+        }
+
+        const QString label = ncxLabelForContentElement(content);
+        TargetAnchorInfo target;
+        target.bookId = bookId;
+        target.ref = location;
+        target.file = targetItemId.isEmpty() ? itemId : targetItemId;
+        target.location = location;
+        target.previewHtml = label;
+        target.title = label;
+        target.type = QStringLiteral("navigation");
+        appendReferenceableTarget(targets, seenLocations, target);
+    }
+}
+
+void EPubContainer::extractReferenceableTargetsFromDocument(const QString &itemId,
+                                                            const QString &path,
+                                                            QVector<TargetAnchorInfo> &targets,
+                                                            QSet<QString> &seenLocations)
+{
+    const QByteArray data = readData(path);
+    if (data.isEmpty()) {
+        return;
+    }
+
+    QDomDocument doc;
+    if (!setDomContentWithNamespaces(doc, data)) {
+        return;
+    }
+
+    const QString bookId = m_metadata[QStringLiteral("unique-identifier")].value(0);
+    const QString documentLocation = pathWithoutFragment(path);
+    const int spineIndex = m_orderedItems.indexOf(itemId);
+
+    TargetAnchorInfo documentTarget;
+    documentTarget.bookId = bookId;
+    documentTarget.ref = documentLocation;
+    documentTarget.file = itemId;
+    documentTarget.location = documentLocation;
+    documentTarget.previewHtml = textPreview(documentPreviewNode(doc));
+    documentTarget.title = documentLocation;
+    documentTarget.type = QStringLiteral("document");
+    appendReferenceableTarget(targets, seenLocations, documentTarget);
+
+    std::function<void(const QDomNode &)> visit = [&](const QDomNode &node) {
+        const QDomElement element = node.toElement();
+        if (!element.isNull()) {
+            const QString elementId = element.attribute(QStringLiteral("id")).trimmed();
+            const QString elementName = element.attribute(QStringLiteral("name")).trimmed();
+            const QString elementFragment = elementId.isEmpty() ? elementName : elementId;
+            const QString dataRole = element.attribute(QStringLiteral("data-role"));
+            const QString anchorType = element.attribute(QStringLiteral("data-anchor-type"));
+
+            if (!elementFragment.isEmpty() && !isCrossReferenceSourceAnchor(element)) {
+                TargetAnchorInfo target;
+                target.bookId = bookId;
+                target.file = itemId;
+                target.location = documentLocation + QStringLiteral("#") + elementFragment;
+                target.previewHtml = textPreview(element);
+                target.title = elementTitle(element);
+
+                const bool legacyTarget = dataRole == QStringLiteral("target");
+                const bool referenceableAnchor = dataRole == QStringLiteral("anchor") && anchorType != QStringLiteral("crossref");
+                if (legacyTarget || referenceableAnchor) {
+                    target.ref = element.attribute(QStringLiteral("data-ref")).trimmed();
+                    if (target.ref.isEmpty()) {
+                        target.ref = elementFragment;
+                    }
+                    target.type = anchorType.isEmpty() ? (legacyTarget ? QStringLiteral("target") : QStringLiteral("anchor")) : anchorType;
+                } else {
+                    target.ref = target.location;
+                    target.type = QStringLiteral("element");
+                }
+
+                appendReferenceableTarget(targets, seenLocations, target);
+            } else if (elementFragment.isEmpty() && spineIndex >= 0 && isReferenceableStructuralElement(element)) {
+                TargetAnchorInfo target;
+                target.bookId = bookId;
+                target.file = itemId;
+                target.location = QStringLiteral("epubcfi(") + buildSpineCFI(spineIndex) + QStringLiteral("!") + buildCFI(element) + QStringLiteral(")");
+                target.ref = target.location;
+                target.previewHtml = textPreview(element);
+                target.title = elementTitle(element);
+                target.type = referenceableTargetType(element);
+                appendReferenceableTarget(targets, seenLocations, target);
+            }
+        }
+
+        QDomNode child = node.firstChild();
+        while (!child.isNull()) {
+            visit(child);
+            child = child.nextSibling();
+        }
+    };
+
+    visit(doc.documentElement());
+}
+
+QVector<TargetAnchorInfo> EPubContainer::referenceableTargets()
+{
+    QVector<TargetAnchorInfo> targets;
+    QSet<QString> seenLocations;
+
+    for (auto it = m_items.cbegin(); it != m_items.cend(); ++it) {
+        const EpubItem item = it.value();
+        if (item.properties.contains(QStringLiteral("nav")) && isDocumentItem(item)) {
+            extractNavigationTargetsFromDocument(it.key(), item.path, targets, seenLocations);
+        } else if (item.mimetype == QByteArrayLiteral("application/x-dtbncx+xml")) {
+            extractNcxTargetsFromDocument(it.key(), item.path, targets, seenLocations);
+        }
+    }
+
+    QStringList itemIds = m_orderedItems;
+    QStringList unorderedDocumentItemIds;
+    for (auto it = m_items.cbegin(); it != m_items.cend(); ++it) {
+        if (!isDocumentItem(it.value()) || isNavigationDocumentItem(it.value()) || itemIds.contains(it.key())) {
+            continue;
+        }
+
+        unorderedDocumentItemIds.append(it.key());
+    }
+
+    std::sort(unorderedDocumentItemIds.begin(), unorderedDocumentItemIds.end(), [this](const QString &left, const QString &right) {
+        return QString::localeAwareCompare(m_items.value(left).path, m_items.value(right).path) < 0;
+    });
+    itemIds.append(unorderedDocumentItemIds);
+
+    for (const QString &itemId : std::as_const(itemIds)) {
+        const EpubItem item = m_items.value(itemId);
+        if (!isDocumentItem(item) || isNavigationDocumentItem(item)) {
+            continue;
+        }
+
+        extractReferenceableTargetsFromDocument(itemId, item.path, targets, seenLocations);
+    }
+
+    return targets;
+}
+
+void EPubContainer::extractTargetAnchorsFromDocument(const QString &itemId, const QString &path)
+{
+    QByteArray data = readData(path);
+
+    QDomDocument doc;
+    if (!doc.setContent(data, QDomDocument::ParseOption::UseNamespaceProcessing))
+        return;
+    int found = 0;
+    std::function<void(const QDomNode &)> visit = [&](const QDomNode &node) {
+        QDomElement e = node.toElement();
+        if (!e.isNull()) {
+            const QString dataRole = e.attribute(QStringLiteral("data-role"));
+            const QString anchorType = e.attribute(QStringLiteral("data-anchor-type"));
+            const QString elementId = e.attribute(QStringLiteral("id")).trimmed();
+            const bool legacyTarget = dataRole == QStringLiteral("target");
+            const bool referenceableAnchor = dataRole == QStringLiteral("anchor") && anchorType != QStringLiteral("crossref") && !elementId.isEmpty();
+            if (legacyTarget || referenceableAnchor) {
+                qDebug() << "Found target anchor in document" << path << "with id" << elementId << "and data-ref" << e.attribute(QStringLiteral("data-ref"));
+                TargetAnchorInfo anchor;
+                anchor.bookId = m_metadata[QStringLiteral("unique-identifier")].value(0);
+                anchor.ref = e.attribute(QStringLiteral("data-ref")).trimmed();
+                if (anchor.ref.isEmpty()) {
+                    anchor.ref = elementId;
+                }
+                anchor.file = itemId;
+                anchor.title = e.attribute(QStringLiteral("title")).trimmed();
+                anchor.type = anchorType.isEmpty() ? (legacyTarget ? QStringLiteral("target") : QStringLiteral("anchor")) : anchorType;
+
+                if (!elementId.isEmpty()) {
+                    anchor.location = pathWithoutFragment(path) + QStringLiteral("#") + elementId;
+                } else {
+                    const int spineIndex = m_orderedItems.indexOf(itemId);
+                    if (spineIndex >= 0) {
+                        anchor.location = QStringLiteral("epubcfi(") + buildSpineCFI(spineIndex) + QStringLiteral("!") + buildCFI(e) + QStringLiteral(")");
+                    } else {
+                        anchor.location = QStringLiteral("epubcfi(") + buildCFI(e) + QStringLiteral(")");
+                    }
+                }
+
+                QString innerHtml;
+                for (QDomNode child = e.firstChild(); !child.isNull(); child = child.nextSibling()) {
+                    QTextStream stream(&innerHtml);
+                    child.save(stream, 0);
+                }
+                anchor.previewHtml = innerHtml;
+
+                m_targetAnchors.append(anchor);
+                ++found;
+                // Maintain an index for fast lookup by ref
+                if (!anchor.ref.isEmpty()) {
+                    m_targetAnchorIndex.insert(anchor.ref, anchor);
+                }
+            }
+        }
+
+        QDomNode child = node.firstChild();
+        while (!child.isNull()) {
+            visit(child);
+            child = child.nextSibling();
+        }
+    };
+
+    visit(doc.documentElement());
+}
+
+QVector<TargetAnchorInfo> EPubContainer::targetAnchors() const
+{
+    return m_targetAnchors;
+}
+
+const TargetAnchorInfo *EPubContainer::targetAnchorByRef(const QString &ref) const
+{
+    auto it = m_targetAnchorIndex.constFind(ref);
+    if (it == m_targetAnchorIndex.constEnd()) {
+        return nullptr;
+    }
+
+    return &it.value();
+}
+
+QString EPubContainer::itemIdForPath(const QString &path) const
+{
+    const QString normalizedPath = pathWithoutFragment(path);
+    const QString decodedPath = archivePathFromUri(path);
+    for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+        const QString itemPath = pathWithoutFragment(it.value().path);
+        if (itemPath == normalizedPath || itemPath == decodedPath) {
+            return it.key();
+        }
+    }
+
+    return {};
+}
 
 EpubPageReference::StandardType EpubPageReference::typeFromString(const QString &name)
 {
-    if (name == QStringLiteral("cover")) {
+    const QString normalizedName = name.toLower();
+    if (normalizedName == QStringLiteral("cover")) {
         return CoverPage;
-    } else if (name == QStringLiteral("title-page")) {
+    } else if (normalizedName == QStringLiteral("title-page")) {
         return TitlePage;
-    } else if (name == QStringLiteral("toc")) {
+    } else if (normalizedName == QStringLiteral("toc")) {
         return TableOfContents;
-    } else if (name == QStringLiteral("index")) {
+    } else if (normalizedName == QStringLiteral("index")) {
         return Index;
-    } else if (name == QStringLiteral("glossary")) {
+    } else if (normalizedName == QStringLiteral("glossary")) {
         return Glossary;
-    } else if (name == QStringLiteral("acknowledgements")) {
+    } else if (normalizedName == QStringLiteral("acknowledgements")) {
         return Acknowledgements;
-    } else if (name == QStringLiteral("bibliography")) {
+    } else if (normalizedName == QStringLiteral("bibliography")) {
         return Bibliography;
-    } else if (name == QStringLiteral("colophon")) {
+    } else if (normalizedName == QStringLiteral("colophon")) {
         return Colophon;
-    } else if (name == QStringLiteral("copyright-page")) {
+    } else if (normalizedName == QStringLiteral("copyright-page")) {
         return CopyrightPage;
-    } else if (name == QStringLiteral("dedication")) {
+    } else if (normalizedName == QStringLiteral("dedication")) {
         return Dedication;
-    } else if (name == QStringLiteral("epigraph")) {
+    } else if (normalizedName == QStringLiteral("epigraph")) {
         return Epigraph;
-    } else if (name == QStringLiteral("foreword")) {
+    } else if (normalizedName == QStringLiteral("foreword")) {
         return Foreword;
-    } else if (name == QStringLiteral("loi")) {
+    } else if (normalizedName == QStringLiteral("loi")) {
         return ListOfIllustrations;
-    } else if (name == QStringLiteral("lot")) {
+    } else if (normalizedName == QStringLiteral("lot")) {
         return ListOfTables;
-    } else if (name == QStringLiteral("notes")) {
+    } else if (normalizedName == QStringLiteral("notes")) {
         return Notes;
-    } else if (name == QStringLiteral("preface")) {
+    } else if (normalizedName == QStringLiteral("preface")) {
         return Preface;
-    } else if (name == QStringLiteral("text")) {
+    } else if (normalizedName == QStringLiteral("text")) {
         return Text;
     } else {
         return Other;

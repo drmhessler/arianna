@@ -20,8 +20,9 @@ Kirigami.Page {
     property string currentLocation
     property real zoomLevel: 1.0
     property var reloadLocation: null
-    property string identifier
     property var entry: null
+    property bool readOnly: false
+    property string referenceSourceTitle: ""
     readonly property color readerTheme: Kirigami.Theme.backgroundColor
     readonly property bool hideSidebar: true
     readonly property bool centerToolbarActions: true
@@ -66,6 +67,7 @@ Kirigami.Page {
     signal zoomLevelSaved(zoomLevel: real)
     signal bookReady(title: var)
     signal bookClosed
+    signal addToLibraryRequested
 
     onCurrentReaderThemeChanged: backend.applyStyle()
 
@@ -87,18 +89,40 @@ Kirigami.Page {
         return root.entry ? (root.entry.uniqueIdentifier || root.entry.identifier || "") : "";
     }
 
-    function editBook(selectedText) {
-        const editorPath = Config.editorPath.trim();
-        if (editorPath.length === 0 || !root.filename) {
-            return;
+    function bookDeliveryMode(value, fallbackValue, allowedValues) {
+        const normalized = (value || fallbackValue).trim().toLowerCase();
+        return allowedValues.indexOf(normalized) !== -1 ? normalized : fallbackValue;
+    }
+
+    function editBook(selectedText, cfi, anchorId, anchorOpenTag, anchorCloseTag) {
+        const editorAppFilePath = Config.editorPath.trim();
+        if (editorAppFilePath.length === 0 || !root.filename) {
+            return false;
         }
 
         const editorArguments = [root.filename];
+        if (cfi && cfi.length > 0) {
+            editorArguments.push("--goto-cfi");
+            editorArguments.push(cfi);
+        }
+        if (anchorId && anchorId.length > 0) {
+            editorArguments.push("--anchor-id");
+            editorArguments.push(anchorId);
+        }
+        if (anchorOpenTag && anchorOpenTag.length > 0) {
+            editorArguments.push("--anchor-open-tag");
+            editorArguments.push(anchorOpenTag);
+        }
+        if (anchorCloseTag && anchorCloseTag.length > 0) {
+            editorArguments.push("--anchor-close-tag");
+            editorArguments.push(anchorCloseTag);
+        }
         if (selectedText && selectedText.length > 0) {
             editorArguments.push("--select-text");
             editorArguments.push(selectedText);
         }
-        EditorProcess.start(editorPath, editorArguments);
+        ExternalProcess.start(editorAppFilePath, editorArguments);
+        return true;
     }
 
     function reloadBook() {
@@ -114,14 +138,19 @@ Kirigami.Page {
             maxSpreadColumns: 2
         });
 
-        const bookUrl = "http://127.0.0.1:45961/" + encodeURIComponent(serverIdentifier) + "/book.epub";
+        const resourceMode = bookDeliveryMode(Config.bookResourceMode, "auto", ["auto", "include", "outsource"]);
+        const referencingMode = bookDeliveryMode(Config.bookReferencingMode, "reader", ["reader", "include", "none"]);
+        const bookUrl = "http://127.0.0.1:45961/" + encodeURIComponent(serverIdentifier)
+            + "/book.epub?resourceMode=" + encodeURIComponent(resourceMode)
+            + "&referencingMode=" + encodeURIComponent(referencingMode);
         const urlNormalized = JSON.stringify(bookUrl);
+        const serverIdentifierNormalized = JSON.stringify(serverIdentifier);
         console.info("opening book", urlNormalized, renderTo, options);
         const initLocation = reloadLocation ? reloadLocation : currentLocation;
         const initCfi = initLocation ? JSON.stringify(initLocation) : "null";
         reloadLocation = null;
         view.bookReady = false;
-        view.runJavaScript(`openSync(${urlNormalized}, ${initCfi})`);
+        view.runJavaScript(`openSync(${urlNormalized}, ${initCfi}, ${serverIdentifierNormalized})`);
     }
 
     function reloadCurrentBook() {
@@ -135,10 +164,18 @@ Kirigami.Page {
             return;
         }
 
+        view.closeReader();
         view.reload();
     }
 
-    title: backend.metadata ? backend.metadata.title : ''
+    function refreshLibraryEntryFromFile() {
+        const refreshedEntry = applicationWindow().bookListModel.refreshBookFromFile(root.filename);
+        if (!root.readOnly && refreshedEntry.filename && refreshedEntry.filename.length > 0) {
+            root.entry = refreshedEntry;
+        }
+    }
+
+    title: backend.metadata ? backend.metadata.title + (root.referenceSourceTitle ? ' ← ' + root.referenceSourceTitle : '') : ''
     padding: 0
 
     onUrlChanged: reloadBook()
@@ -151,7 +188,16 @@ Kirigami.Page {
         }
 
         function onReaderBackgroundPathChanged() {
+            view.closeReader();
             view.reload();
+        }
+
+        function onBookResourceModeChanged() {
+            root.reloadCurrentBook();
+        }
+
+        function onBookReferencingModeChanged() {
+            root.reloadCurrentBook();
         }
     }
 
@@ -203,20 +249,285 @@ Kirigami.Page {
                     wrapMode: Text.WordWrap
                 }
             }
+            background: Rectangle {
+                radius: Kirigami.Units.smallSpacing
+
+                border.width: 2
+
+                border.color: root.currentReaderTheme === 1 ? "#ff4444" :   // Inverse = rot
+                root.currentReaderTheme === 2 ? "#44cc44" :   // KDE = grün
+                "#66ccff"    // Normal = hellblau
+
+                color: "transparent"
+            }
         }
 
         Shortcut {
             sequence: "Ctrl+F"
-            onActivated: searchDialog.open()
+            onActivated: {
+                searchDialog.open();
+            }
         }
     }
 
+    ListModel {
+        id: notesModel
+    }
+
+    ListModel {
+        id: referenceOverviewModel
+    }
+
+    Kirigami.Dialog {
+        id: referencesDialog
+        property var viewer: null
+        parent: root
+        modal: true
+        title: i18n("References")
+        width: Math.min(Kirigami.Units.gridUnit * 40, applicationWindow().width - Kirigami.Units.gridUnit * 4)
+        height: Math.min(Kirigami.Units.gridUnit * 35, applicationWindow().height - Kirigami.Units.gridUnit * 4)
+
+        contentItem: Item {
+            anchors.fill: parent
+
+            ColumnLayout {
+                anchors.fill: parent
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                anchors.margins: Kirigami.Units.gridUnit
+                spacing: Kirigami.Units.smallSpacing
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 2
+                    Layout.topMargin: Kirigami.Units.smallSpacing * 2
+                    Layout.bottomMargin: Kirigami.Units.smallSpacing
+                    color: Qt.rgba(1, 1, 1, 0.18)
+                    opacity: 0.6
+                }
+
+                Kirigami.PlaceholderMessage {
+                    Layout.fillWidth: true
+                    Layout.bottomMargin: Kirigami.Units.smallSpacing
+                    visible: referenceOverviewModel.count === 0
+                    text: i18n("No references in this book")
+                    icon.name: "emblem-symbolic-link"
+                }
+
+                ListView {
+                    id: referencesListView
+                    model: referenceOverviewModel
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.minimumHeight: Kirigami.Units.gridUnit * 14
+                    Layout.topMargin: Kirigami.Units.smallSpacing
+                    visible: referenceOverviewModel.count > 0
+                    spacing: Kirigami.Units.smallSpacing
+                    clip: true
+
+                    delegate: Delegates.RoundedItemDelegate {
+                        id: referenceDelegate
+                        width: referencesListView.width
+                        property string referenceId: model.ref || ""
+                        property string referenceTitle: model.title || ""
+                        property string referenceText: model.text || referenceTitle || referenceId
+                        property string referenceTooltip: model.tooltip || referenceTitle || referenceText || referenceId
+                        property string referenceLocation: model.location || ""
+                        property string referenceSection: model.section || ""
+
+                        QQC2.ToolTip.text: referenceTooltip
+                        QQC2.ToolTip.visible: hovered && referenceTooltip.length > 0
+                        QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+
+                        onClicked: {
+                            if (referenceLocation && referencesDialog.viewer) {
+                                referencesDialog.viewer.runJavaScript('reader.view.goTo(' + JSON.stringify(referenceLocation) + ')');
+                                referencesDialog.close();
+                            }
+                        }
+
+                        contentItem: ColumnLayout {
+                            spacing: Kirigami.Units.smallSpacing
+
+                            QQC2.Label {
+                                Layout.fillWidth: true
+                                text: referenceTitle || referenceText || i18n("Reference")
+                                wrapMode: Text.WordWrap
+                                font.weight: Font.Medium
+                                elide: Text.ElideRight
+                                maximumLineCount: 2
+                                color: Kirigami.Theme.textColor
+                            }
+
+                            QQC2.Label {
+                                visible: referenceText.length > 0 && referenceText !== referenceTitle
+                                Layout.fillWidth: true
+                                text: referenceText
+                                wrapMode: Text.WordWrap
+                                elide: Text.ElideRight
+                                maximumLineCount: 2
+                                color: Kirigami.Theme.textColor
+                            }
+
+                            QQC2.Label {
+                                visible: referenceSection.length > 0
+                                Layout.fillWidth: true
+                                text: referenceSection
+                                wrapMode: Text.WordWrap
+                                font: Kirigami.Theme.smallFont
+                                color: Kirigami.Theme.disabledTextColor
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Kirigami.Dialog {
+        id: notesDialog
+        property var viewer: null
+        parent: root
+        modal: true
+        title: i18n("Remarks")
+        width: Math.min(Kirigami.Units.gridUnit * 40, applicationWindow().width - Kirigami.Units.gridUnit * 4)
+        height: Math.min(Kirigami.Units.gridUnit * 35, applicationWindow().height - Kirigami.Units.gridUnit * 4)
+
+        contentItem: Item {
+            anchors.fill: parent
+
+            ColumnLayout {
+                anchors.fill: parent
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                anchors.margins: Kirigami.Units.gridUnit
+                spacing: Kirigami.Units.smallSpacing
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 2
+                    Layout.topMargin: Kirigami.Units.smallSpacing * 2
+                    Layout.bottomMargin: Kirigami.Units.smallSpacing
+                    color: Qt.rgba(1, 1, 1, 0.18)
+                    opacity: 0.6
+                }
+
+                Kirigami.PlaceholderMessage {
+                    id: notesPlaceholder
+                    Layout.fillWidth: true
+                    Layout.bottomMargin: Kirigami.Units.smallSpacing
+                    visible: notesModel.count === 0
+                    text: i18n("No remarks in this book")
+                    icon.name: "comment"
+                }
+
+                ListView {
+                    id: notesListView
+                    model: notesModel
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.minimumHeight: Kirigami.Units.gridUnit * 14
+                    Layout.topMargin: Kirigami.Units.smallSpacing
+                    visible: notesModel.count > 0
+                    spacing: Kirigami.Units.smallSpacing
+                    clip: true
+
+                    delegate: Delegates.RoundedItemDelegate {
+                        id: notesDelegate
+                        width: notesListView.width
+                        property string annotationValue: model.value || ""
+                        property string annotationText: model.text || model.value || ""
+                        property string annotationNote: model.note || ""
+                        property string annotationCfi: model.cfi || model.value || ""
+                        property string annotationColor: model.color || "#FFD700"
+
+                        onClicked: {
+                            if (annotationCfi && notesDialog.viewer) {
+                                notesDialog.viewer.runJavaScript('reader.view.goTo("' + annotationCfi + '")');
+                                notesDialog.close();
+                            }
+                        }
+
+                        contentItem: ColumnLayout {
+                            spacing: Kirigami.Units.smallSpacing
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Kirigami.Units.smallSpacing
+
+                                Rectangle {
+                                    Layout.preferredWidth: Kirigami.Units.gridUnit * 1.0
+                                    Layout.preferredHeight: Kirigami.Units.gridUnit * 1.5
+                                    color: annotationColor
+                                    radius: Kirigami.Units.smallSpacing
+                                }
+
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 0
+
+                                    QQC2.Label {
+                                        Layout.fillWidth: true
+                                        text: annotationText || i18n("Highlighted text")
+                                        wrapMode: Text.WordWrap
+                                        font.weight: Font.Medium
+                                        elide: Text.ElideRight
+                                        maximumLineCount: 2
+                                        color: Kirigami.Theme.textColor
+                                    }
+                                }
+
+                                QQC2.ToolButton {
+                                    Layout.preferredWidth: Kirigami.Units.gridUnit * 2
+                                    Layout.preferredHeight: Kirigami.Units.gridUnit * 2
+                                    display: QQC2.AbstractButton.IconOnly
+                                    icon.name: "edit-delete"
+                                    text: i18n("Delete Annotation")
+                                    enabled: !root.readOnly && annotationValue.length > 0
+                                    QQC2.ToolTip.text: text
+                                    QQC2.ToolTip.visible: hovered
+                                    QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                                    onClicked: backend.deleteAnnotation(annotationValue)
+                                }
+                            }
+
+                            QQC2.Label {
+                                visible: annotationNote.length > 0
+                                Layout.fillWidth: true
+                                text: annotationNote
+                                wrapMode: Text.WordWrap
+                                font: Kirigami.Theme.smallFont
+                                color: Kirigami.Theme.disabledTextColor
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     QQC2.ActionGroup {
         id: readerThemeActionGroup
         exclusive: true
     }
 
     actions: [
+        Kirigami.Action {
+            text: i18n("References")
+            displayHint: Kirigami.DisplayHint.IconOnly
+            icon.name: "emblem-symbolic-link"
+            onTriggered: {
+                referencesDialog.open();
+                backend.loadReferenceOverview();
+            }
+            enabled: view.bookReady
+        },
+        Kirigami.Action {
+            text: i18n("Remarks")
+            displayHint: Kirigami.DisplayHint.IconOnly
+            icon.source: "qrc:/qt/qml/org/kde/arianna/qml/icons/bookmark-gold.svg"
+            onTriggered: notesDialog.open()
+            enabled: notesModel.count > 0
+        },
         Kirigami.Action {
             text: i18nc("@action:intoolbar", "Search")
             displayHint: Kirigami.DisplayHint.IconOnly
@@ -260,6 +571,14 @@ Kirigami.Page {
             onTriggered: root.editBook()
         },
         Kirigami.Action {
+            text: i18nc("@action:intoolbar", "Add to Library")
+            displayHint: Kirigami.DisplayHint.IconOnly
+            icon.name: "list-add"
+            visible: root.readOnly
+            enabled: root.filename !== ""
+            onTriggered: root.addToLibraryRequested()
+        },
+        Kirigami.Action {
             text: i18n("Book Details")
             displayHint: Kirigami.DisplayHint.IconOnly
             icon.name: "documentinfo"
@@ -290,7 +609,11 @@ Kirigami.Page {
         helpfulAction: Kirigami.Action {
             text: i18n("Open file")
             onTriggered: {
-                const fileDialog = openFileDialog.createObject(QQC2.ApplicationWindow.overlay);
+                const fileDialog = openFileDialog.createObject(applicationWindow());
+                if (!fileDialog) {
+                    console.error("Failed to create openFileDialog");
+                    return;
+                }
                 fileDialog.accepted.connect(() => {
                     const file = fileDialog.file;
                     if (!file) {
@@ -307,7 +630,7 @@ Kirigami.Page {
         id: openFileDialog
 
         FileDialog {
-            id: root
+            id: openFileDialogObject
             parentWindow: applicationWindow()
             title: i18n("Please choose a file")
             nameFilters: [i18nc("Name filter for EPUB files", "eBook files (*.epub *.cb* *.fb2 *.fb2zip)")]
@@ -329,7 +652,18 @@ Kirigami.Page {
     }
 
     Connections {
-        target: EditorProcess
+        target: AnnotationStore
+        function onAnnotationsChanged(fileName) {
+            if (fileName && fileName !== root.filename) {
+                return;
+            }
+
+            backend.loadAnnotations();
+        }
+    }
+
+    Connections {
+        target: ExternalProcess
         function onEditedFileChanged(file) {
             if (file !== root.filename && root.url !== "file://" + file) {
                 return;
@@ -343,7 +677,10 @@ Kirigami.Page {
         id: reloadChangedBookTimer
         interval: 500
         repeat: false
-        onTriggered: root.reloadCurrentBook()
+        onTriggered: {
+            root.refreshLibraryEntryFromFile();
+            root.reloadCurrentBook();
+        }
     }
 
     Window {
@@ -378,41 +715,170 @@ Kirigami.Page {
         }
     }
 
+    Kirigami.Dialog {
+        id: aiDiscussionDialog
+        parent: QQC2.ApplicationWindow.overlay
+        modal: true
+        title: i18n("AI Discussion")
+        standardButtons: QQC2.Dialog.Close
+        width: Math.min(Kirigami.Units.gridUnit * 38, parent ? parent.width - Kirigami.Units.gridUnit * 2 : Kirigami.Units.gridUnit * 38)
+        height: Math.min(Kirigami.Units.gridUnit * 30, parent ? parent.height - Kirigami.Units.gridUnit * 2 : Kirigami.Units.gridUnit * 30)
+        x: parent ? Math.round((parent.width - width) / 2) : 0
+        y: parent ? Math.round((parent.height - height) / 2) : 0
+
+        contentItem: ColumnLayout {
+            spacing: Kirigami.Units.smallSpacing
+
+            QQC2.Label {
+                id: aiDiscussionSelectedTextLabel
+                Layout.fillWidth: true
+                text: i18n("Selected text:")
+                wrapMode: Text.WordWrap
+                font.weight: Font.Medium
+            }
+
+            QQC2.Label {
+                id: aiDiscussionTocEntryLabel
+                Layout.fillWidth: true
+                visible: text.length > 0
+                wrapMode: Text.WordWrap
+                font: Kirigami.Theme.smallFont
+                color: Kirigami.Theme.disabledTextColor
+            }
+
+            QQC2.ScrollView {
+                id: aiDiscussionSelectedTextScroll
+                Layout.fillWidth: true
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 8
+                clip: true
+
+                QQC2.TextArea {
+                    id: aiDiscussionSelectedText
+                    width: aiDiscussionSelectedTextScroll.availableWidth
+                    selectByMouse: true
+                    wrapMode: Text.Wrap
+                    placeholderText: i18n("No selected text available")
+                }
+            }
+
+            QQC2.Label {
+                Layout.fillWidth: true
+                text: i18n("Question prompt:")
+                font.weight: Font.Medium
+            }
+
+            QQC2.ScrollView {
+                id: aiDiscussionQuestionPromptScroll
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+
+                QQC2.TextArea {
+                    id: aiDiscussionQuestionPrompt
+                    width: aiDiscussionQuestionPromptScroll.availableWidth
+                    selectByMouse: true
+                    wrapMode: Text.Wrap
+                    placeholderText: i18n("Enter a question or task for the AI discussion")
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+
+                Item {
+                    Layout.fillWidth: true
+                }
+
+                QQC2.Button {
+                    text: i18n("Copy Prompt")
+                    icon.name: "edit-copy"
+                    enabled: aiDiscussionSelectedText.text.trim().length > 0
+                        && aiDiscussionQuestionPrompt.text.trim().length > 0
+                    onClicked: backend.copyAiDiscussionPrompt()
+                }
+            }
+        }
+    }
+
+    Kirigami.Dialog {
+        id: annotationDialog
+        parent: QQC2.ApplicationWindow.overlay
+        // parent: root
+        modal: true
+        title: i18nc("@title:dialog", "Annotation")
+        standardButtons: QQC2.Dialog.Ok | QQC2.Dialog.Cancel
+        width: Math.min(Kirigami.Units.gridUnit * 30, parent ? parent.width - Kirigami.Units.gridUnit * 2 : Kirigami.Units.gridUnit * 30)
+        x: parent ? Math.round((parent.width - width) / 2) : 0
+        y: parent ? Math.round((parent.height - height) / 2) : 0
+
+        property string annotationValue: ""
+
+        onAccepted: backend.updateAnnotationNote(annotationValue, annotationNote.text)
+        onOpened: annotationNote.forceActiveFocus()
+
+        contentItem: ColumnLayout {
+            spacing: Kirigami.Units.smallSpacing
+
+            QQC2.Label {
+                id: annotationExcerpt
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                maximumLineCount: 4
+                elide: Text.ElideRight
+                textFormat: Text.PlainText
+            }
+
+            QQC2.TextArea {
+                id: annotationNote
+                Layout.fillWidth: true
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 8
+                wrapMode: Text.Wrap
+                placeholderText: i18n("Add Note…")
+            }
+        }
+    }
+
     FocusScope {
         id: focusScope
         anchors.fill: parent
-        focus: true // Set focus to the FocusScope
+        focus: true
         focusPolicy: Qt.StrongFocus
-        onFocusChanged: {
-            if (!focusScope.focus) {
-                focusScope.forceActiveFocus();
-            }
-        }
         Keys.onPressed: event => {
+            let handled = true;
             if (event.modifiers & Qt.ControlModifier) {
                 if (event.key === Qt.Key_Left) {
                     view.prevSection();
                 } else if (event.key === Qt.Key_Right) {
                     view.nextSection();
+                } else if (event.key === Qt.Key_Up) {
+                    view.zoomIn();
+                } else if (event.key === Qt.Key_Down) {
+                    view.zoomOut();
                 } else if (event.key === Qt.Key_E) {
                     if (root.filename) {
                         root.editBook();
                     }
+                } else {
+                    handled = false;
                 }
             } else if (event.modifiers & Qt.AltModifier) {
                 if (event.key === Qt.Key_Left) {
                     view.goBack();
                 } else if (event.key === Qt.Key_Right) {
                     view.goForward();
+                } else {
+                    handled = false;
                 }
             } else {
                 if (event.key === Qt.Key_Left) {
                     view.prev();
                 } else if (event.key === Qt.Key_Right) {
                     view.next();
+                } else {
+                    handled = false;
                 }
             }
-            event.accepted = true;
+            event.accepted = handled;
         }
     }
 
@@ -431,7 +897,21 @@ Kirigami.Page {
         settings.localContentCanAccessRemoteUrls: true
         settings.localContentCanAccessFileUrls: true
 
-        Component.onCompleted: view.zoomFactor = root.zoomLevel > 0 ? root.zoomLevel : 1.0
+        Component.onCompleted: {
+            view.zoomFactor = root.zoomLevel > 0 ? root.zoomLevel : 1.0;
+            referencesDialog.viewer = view;
+            notesDialog.viewer = view;
+        }
+
+        Component.onDestruction: closeReader()
+
+        function closeReader() {
+            readerReady = false;
+            bookReady = false;
+            readerCanGoBack = false;
+            readerCanGoForward = false;
+            view.runJavaScript(`globalThis.closeReader?.()`);
+        }
 
         onCertificateError: error => {
             const u = error.url;
@@ -445,7 +925,8 @@ Kirigami.Page {
             error.rejectCertificate();
         }
         onVisibleChanged: if (!visible) {
-            EditorProcess.clearWatchedFile();
+            closeReader();
+            ExternalProcess.clearWatchedFile();
             root.bookClosed();
         }
 
@@ -501,12 +982,72 @@ Kirigami.Page {
             }
         }
 
+        function setZoomFactor(zoomFactor) {
+            const clampedZoomFactor = Math.max(0.5, Math.min(zoomFactor, 3.0));
+            if (Math.abs(view.zoomFactor - clampedZoomFactor) < 0.001) {
+                return;
+            }
+
+            view.zoomFactor = clampedZoomFactor;
+            root.zoomLevelSaved(view.zoomFactor);
+        }
+
+        function zoomIn() {
+            setZoomFactor(view.zoomFactor + 0.1);
+        }
+
+        function zoomOut() {
+            setZoomFactor(view.zoomFactor - 0.1);
+        }
+
+        Connections {
+            target: backend
+            function onSelectionChanged() {
+                Qt.callLater(() => {
+                    if (!backend.selection) {
+                        return;
+                    }
+
+                    if (backend.selection.type === "annotation") {
+                        annotationPopup.popup();
+                    } else {
+                        selectionPopup.popup();
+                    }
+                });
+            }
+        }
+
         QQC2.Menu {
             id: selectionPopup
-            Connections {
-                target: backend
-                function onSelectionChanged() {
-                    Qt.callLater(selectionPopup.popup);
+
+            QQC2.MenuItem {
+                text: i18n("Highlight")
+                icon.name: 'bookmark-new'
+                enabled: backend.canAnnotateSelection()
+                onClicked: {
+                    if (backend.createAnnotationFromSelection()) {
+                        view.runJavaScript("selectionAction('highlight')");
+                    }
+                }
+            }
+
+            QQC2.MenuItem {
+                text: i18n("Create Reference")
+                icon.name: 'insert-link'
+                enabled: true
+                onClicked: {
+                    view.runJavaScript("selectionAction('reference')");
+                }
+            }
+
+            QQC2.MenuItem {
+                text: i18n("AI Discussion")
+                icon.name: 'tools-wizard'
+                enabled: backend.canDiscussSelectionWithAi()
+                onClicked: {
+                    if (backend.openAiDiscussionFromSelection()) {
+                        view.runJavaScript("selectionAction('ai-discussion')");
+                    }
                 }
             }
 
@@ -525,7 +1066,7 @@ Kirigami.Page {
             QQC2.MenuItem {
                 text: i18n("Search with Google")
                 icon.name: 'internet-web-browser'
-                enabled: backend.selection && backend.selection.text
+                enabled: !!backend.selection && !!backend.selection.text
                 onClicked: {
                     if (!backend.selection || !backend.selection.text) {
                         return;
@@ -544,7 +1085,7 @@ Kirigami.Page {
             QQC2.MenuItem {
                 text: i18n("Edit at Text")
                 icon.name: 'document-edit'
-                enabled: Config.editorPath.trim().length > 0 && root.filename !== "" && backend.selection && backend.selection.text
+                enabled: Config.editorPath.trim().length > 0 && root.filename !== "" && !!backend.selection && !!backend.selection.text
                 onClicked: {
                     if (!backend.selection || !backend.selection.text) {
                         return;
@@ -558,6 +1099,33 @@ Kirigami.Page {
                 text: i18n("Translate")
                 icon.name: 'edit-find-replace'
                 onClicked: view.runJavaScript("selectionAction('translate')")
+            }
+        }
+
+        QQC2.Menu {
+            id: annotationPopup
+
+            QQC2.MenuItem {
+                text: i18n("Edit Annotation")
+                icon.name: 'pencil'
+                enabled: backend.selection && backend.selection.value && backend.annotationForValue(backend.selection.value) !== null
+                onClicked: {
+                    backend.openAnnotationEditor(backend.selection.value);
+                    view.runJavaScript("selectionAction()");
+                }
+            }
+
+            QQC2.MenuItem {
+                text: i18n("Select Text")
+                icon.name: 'edit-select-text'
+                onClicked: view.runJavaScript("selectionAction('select')")
+            }
+
+            QQC2.MenuItem {
+                text: i18n("Delete Annotation")
+                icon.name: 'edit-delete'
+                enabled: backend.selection && backend.selection.value && backend.annotationForValue(backend.selection.value) !== null
+                onClicked: backend.deleteAnnotation(backend.selection.value)
             }
         }
     }
@@ -588,11 +1156,10 @@ Kirigami.Page {
                 } else {
                     // Zoom functionality with vertical Ctrl-wheel
                     if (dy > 0) {
-                        view.zoomFactor = Math.min(view.zoomFactor + 0.1, 3.0);
+                        view.zoomIn();
                     } else if (dy < 0) {
-                        view.zoomFactor = Math.max(view.zoomFactor - 0.1, 0.5);
+                        view.zoomOut();
                     }
-                    root.zoomLevelSaved(view.zoomFactor);
                 }
             } else {
                 // Navigation functionality
@@ -721,6 +1288,9 @@ Kirigami.Page {
         id: backend
         WebChannel.id: "backend"
         property var selection: null
+        property var annotationMap: ({})
+        property var annotations: []
+        property var referenceOverview: []
         property double progress: 0
         property var location
         property var locations: root.locations
@@ -730,12 +1300,377 @@ Kirigami.Page {
         property string file: root.url
         property int timeInChapter: 0
         property int timeInBook: 0
+
         function get(script, callback) {
             return view.runJavaScript(`JSON.stringify(${script})`, callback);
         }
         function showTranslation(text) {
             sourceText.text = text;
             translatorDialog.open();
+        }
+        function promptTextValue(value) {
+            if (value === undefined || value === null) {
+                return "";
+            }
+            if (Array.isArray(value)) {
+                return value.map(item => promptTextValue(item)).filter(item => item.length > 0).join(", ");
+            }
+            if (typeof value === "object") {
+                if (value.name) {
+                    return promptTextValue(value.name);
+                }
+                if (value.label) {
+                    return promptTextValue(value.label);
+                }
+                if (value.value) {
+                    return promptTextValue(value.value);
+                }
+                if (value.text) {
+                    return promptTextValue(value.text);
+                }
+                return "";
+            }
+            return String(value).trim();
+        }
+        function selectedDiscussionText() {
+            if (!selection) {
+                return "";
+            }
+
+            return promptTextValue(selection.content || selection.text || "");
+        }
+        function canDiscussSelectionWithAi() {
+            return selectedDiscussionText().length > 0;
+        }
+        function bookTitleContextForPrompt() {
+            return promptTextValue(metadata?.title || root.entry?.title || root.filename);
+        }
+        function bookAuthorContextForPrompt() {
+            return promptTextValue(root.entry?.author || metadata?.creator || metadata?.author);
+        }
+        function bookTitleForPrompt() {
+            return bookTitleContextForPrompt() || i18n("Unknown");
+        }
+        function bookAuthorForPrompt() {
+            return bookAuthorContextForPrompt() || i18n("Unknown");
+        }
+        function tocEntryForPrompt() {
+            return promptTextValue(selection?.tocItem?.label || selection?.tocItem || location?.tocItem?.label || location?.tocItem);
+        }
+        function aiDiscussionTocEntryText() {
+            const tocEntry = tocEntryForPrompt();
+            return tocEntry.length > 0 ? i18n("Table of contents entry: %1", tocEntry) : "";
+        }
+        function aiDiscussionSelectedTextHeading() {
+            const title = bookTitleContextForPrompt();
+            const author = bookAuthorContextForPrompt();
+            if (title.length > 0 && author.length > 0) {
+                return i18n("Selected text from %1 by %2:", title, author);
+            }
+            if (title.length > 0) {
+                return i18n("Selected text from %1:", title);
+            }
+            if (author.length > 0) {
+                return i18n("Selected text by %1:", author);
+            }
+            return i18n("Selected text:");
+        }
+        function defaultAiDiscussionQuestionPrompt() {
+            return [
+                i18n("- Discuss the central claim of the passage."),
+                i18n("- Explain important terms, allusions, or assumptions."),
+                i18n("- Ask critical questions that help deepen the reading."),
+                i18n("- Mention possible cross-references to similar passages when useful.")
+            ].join("\n");
+        }
+        function buildAiDiscussionPrompt(selectedText, questionPrompt) {
+            const discussionText = promptTextValue(selectedText === undefined ? selectedDiscussionText() : selectedText);
+            const discussionPrompt = promptTextValue(questionPrompt === undefined ? defaultAiDiscussionQuestionPrompt() : questionPrompt);
+            if (!discussionText || !discussionPrompt) {
+                return "";
+            }
+
+            const location = promptTextValue(selection.value || root.currentLocation || "");
+            const language = promptTextValue(selection.lang || "");
+            const tocEntry = tocEntryForPrompt();
+            const lines = [
+                i18n("You are a careful discussion partner for literary, philosophical, and factual texts."),
+                "",
+                i18n("Context:"),
+                i18n("Book: %1", bookTitleForPrompt()),
+                i18n("Author: %1", bookAuthorForPrompt()),
+            ];
+            if (tocEntry.length > 0) {
+                lines.push(i18n("Table of contents entry: %1", tocEntry));
+            }
+            if (location.length > 0) {
+                lines.push(i18n("Location: %1", location));
+            }
+            if (language.length > 0) {
+                lines.push(i18n("Selection language: %1", language));
+            }
+            lines.push(
+                "",
+                i18n("Selected text:"),
+                "\"\"\"",
+                discussionText,
+                "\"\"\"",
+                "",
+                i18n("Task:"),
+                discussionPrompt
+            );
+            return lines.join("\n");
+        }
+        function openAiDiscussionFromSelection() {
+            const selectedText = selectedDiscussionText();
+            if (!selectedText) {
+                return false;
+            }
+
+            aiDiscussionSelectedText.text = selectedText;
+            aiDiscussionSelectedTextLabel.text = aiDiscussionSelectedTextHeading();
+            aiDiscussionTocEntryLabel.text = aiDiscussionTocEntryText();
+            aiDiscussionQuestionPrompt.text = defaultAiDiscussionQuestionPrompt();
+            aiDiscussionDialog.open();
+            aiDiscussionQuestionPrompt.forceActiveFocus();
+            return true;
+        }
+        function copyAiDiscussionPrompt() {
+            const prompt = buildAiDiscussionPrompt(aiDiscussionSelectedText.text, aiDiscussionQuestionPrompt.text);
+            if (prompt.length > 0) {
+                Clipboard.saveText(prompt);
+            }
+        }
+        function openReferencePage(location, entry, readOnly, sourceTitle) {
+            if (!location) {
+                console.warn('Cannot open reference page, missing location');
+                return;
+            }
+
+            const referenceEntry = entry && entry.filename ? entry : root.entry;
+            const referenceFilename = referenceEntry && referenceEntry.filename ? referenceEntry.filename : root.filename;
+            const referenceLocations = entry && entry.locations ? entry.locations : root.locations;
+            const referenceReadOnly = readOnly === true || root.readOnly;
+
+            if (!referenceFilename) {
+                console.warn('Cannot open reference page, missing filename');
+                return;
+            }
+
+            if (typeof applicationWindow().openReferencePage === 'function') {
+                applicationWindow().openReferencePage(referenceFilename, location, referenceEntry, referenceReadOnly, referenceLocations, sourceTitle);
+                return;
+            }
+
+            applicationWindow().pageStack.layers.push('./EpubViewerPage.qml', {
+                currentLocation: location,
+                locations: referenceLocations,
+                zoomLevel: referenceEntry?.zoomLevel ?? root.zoomLevel,
+                filename: referenceFilename,
+                entry: referenceEntry,
+                readOnly: referenceReadOnly,
+                referenceSourceTitle: sourceTitle,
+                url: root.url
+            });
+        }
+        function cloneAnnotation(annotation) {
+            const copy = {};
+            if (!annotation) {
+                return copy;
+            }
+
+            for (const key in annotation) {
+                copy[key] = annotation[key] === undefined || annotation[key] === null ? "" : annotation[key];
+            }
+
+            return copy;
+        }
+        function annotationList() {
+            return annotations ? annotations.slice() : [];
+        }
+        function updateNotesModel() {
+            notesModel.clear();
+            const list = annotationList();
+            for (let i = 0; i < list.length; ++i) {
+                const annotation = list[i];
+                notesModel.append({
+                    value: annotation.value || "",
+                    text: annotation.text || annotation.value || "",
+                    color: annotation.color || "#FFD700",
+                    note: annotation.note || "",
+                    cfi: annotation.cfi || annotation.value || "",
+                    created: annotation.created || "",
+                    modified: annotation.modified || ""
+                });
+            }
+        }
+        function updateReferenceOverviewModel(references) {
+            referenceOverviewModel.clear();
+            const list = references || [];
+            for (let i = 0; i < list.length; ++i) {
+                const reference = list[i];
+                referenceOverviewModel.append({
+                    ref: reference.ref || "",
+                    title: reference.title || "",
+                    text: reference.text || "",
+                    tooltip: reference.tooltip || "",
+                    location: reference.location || "",
+                    section: reference.section || ""
+                });
+            }
+        }
+        function loadReferenceOverview() {
+            if (!view.bookReady) {
+                return;
+            }
+
+            backend.referenceOverview = [];
+            backend.updateReferenceOverviewModel(backend.referenceOverview);
+            view.runJavaScript("reader.refreshReferenceOverview()");
+        }
+        function cloneAnnotationsMap() {
+            const copy = {};
+            for (const value in annotationMap) {
+                copy[value] = annotationMap[value];
+            }
+            return copy;
+        }
+        function annotationForValue(value) {
+            if (!value || !annotationMap[value]) {
+                return null;
+            }
+
+            return annotationMap[value];
+        }
+        function addAnnotationToView(annotation) {
+            if (!view.bookReady || !annotation || !annotation.value) {
+                return;
+            }
+
+            view.runJavaScript(`reader.view.addAnnotation(${JSON.stringify(annotation)})`);
+        }
+        function removeAnnotationFromView(annotation) {
+            if (!view.bookReady || !annotation || !annotation.value) {
+                return;
+            }
+
+            view.runJavaScript(`reader.view.deleteAnnotation(${JSON.stringify(annotation)})`);
+        }
+        function renderAnnotations() {
+            const list = annotationList();
+            for (let i = 0; i < list.length; ++i) {
+                addAnnotationToView(list[i]);
+            }
+        }
+        function loadAnnotations() {
+            const previousAnnotations = annotationMap || {};
+            const nextAnnotations = {};
+            const nextAnnotationsList = [];
+            if (root.entry.uniqueIdentifier.length > 0) {
+                const loadedAnnotations = AnnotationStore.loadAnnotations(root.entry.uniqueIdentifier);
+                for (let i = 0; i < loadedAnnotations.length; ++i) {
+                    const annotation = loadedAnnotations[i];
+                    if (annotation.value) {
+                        const copy = cloneAnnotation(annotation);
+                        nextAnnotations[annotation.value] = copy;
+                        nextAnnotationsList.push(copy);
+                    }
+                }
+            }
+
+            for (const value in previousAnnotations) {
+                if (!nextAnnotations[value]) {
+                    removeAnnotationFromView(previousAnnotations[value]);
+                }
+            }
+
+            annotationMap = nextAnnotations;
+            annotations = nextAnnotationsList;
+            updateNotesModel();
+            renderAnnotations();
+        }
+        function canAnnotateSelection() {
+            return !root.readOnly && root.entry.uniqueIdentifier.length > 0 && selection && selection.type === "selection" && selection.value;
+        }
+        function saveAnnotation(annotation) {
+            if (!annotation || !annotation.value || root.readOnly || root.entry.uniqueIdentifier.length === 0) {
+                return false;
+            }
+
+            const copy = cloneAnnotation(annotation);
+            AnnotationStore.saveAnnotation(root.entry.uniqueIdentifier, copy);
+            const nextAnnotations = cloneAnnotationsMap();
+            nextAnnotations[copy.value] = copy;
+
+            const nextAnnotationsList = annotationList();
+            const existingIndex = nextAnnotationsList.findIndex(item => item.value === copy.value);
+            if (existingIndex !== -1) {
+                nextAnnotationsList[existingIndex] = copy;
+            } else {
+                nextAnnotationsList.push(copy);
+            }
+
+            annotationMap = nextAnnotations;
+            annotations = nextAnnotationsList;
+            updateNotesModel();
+            addAnnotationToView(copy);
+            return true;
+        }
+        function createAnnotationFromSelection() {
+            if (!canAnnotateSelection()) {
+                return null;
+            }
+
+            const existingAnnotation = annotationForValue(selection.value);
+            if (existingAnnotation) {
+                return existingAnnotation;
+            }
+
+            const annotation = {
+                value: selection.value,
+                color: "yellow",
+                text: selection.content || selection.text || "",
+                note: "",
+                created: new Date().toISOString(),
+                modified: ""
+            };
+            return saveAnnotation(annotation) ? annotation : null;
+        }
+        function updateAnnotationNote(value, note) {
+            const annotation = annotationForValue(value);
+            if (!annotation) {
+                return;
+            }
+
+            const copy = cloneAnnotation(annotation);
+            copy.note = note;
+            copy.modified = new Date().toISOString();
+            saveAnnotation(copy);
+        }
+        function deleteAnnotation(value) {
+            const annotation = annotationForValue(value);
+            if (!annotation || root.readOnly || root.entry.uniqueIdentifier.length === 0) {
+                return;
+            }
+
+            removeAnnotationFromView(annotation);
+            AnnotationStore.removeAnnotation(root.entry.uniqueIdentifier, value);
+            const nextAnnotations = cloneAnnotationsMap();
+            delete nextAnnotations[value];
+            annotationMap = nextAnnotations;
+            annotations = annotations.filter(item => item.value !== value);
+            updateNotesModel();
+        }
+        function openAnnotationEditor(value) {
+            const annotation = annotationForValue(value);
+            if (!annotation) {
+                return;
+            }
+
+            annotationDialog.annotationValue = value;
+            annotationExcerpt.text = annotation.text || "";
+            annotationNote.text = annotation.note || "";
+            annotationDialog.open();
         }
         function dispatch(action) {
             switch (action.type) {
@@ -778,6 +1713,8 @@ Kirigami.Page {
                 }
 
                 applyStyle();
+                backend.loadAnnotations();
+                backend.loadReferenceOverview();
 
                 const metadata = action.payload.book.metadata;
                 if (metadata) {
@@ -806,8 +1743,28 @@ Kirigami.Page {
                 searchResultModel.loading = true;
                 searchDialog.open();
                 break;
+            case 'manual-anchor-required':
+                console.warn("Manual anchor required", action.payload.anchorOpenTag, action.payload.anchorCloseTag, action.payload);
+                if (!root.editBook(action.payload.text || "",
+                                   action.payload.cfi || "",
+                                   action.payload.sourceAnchorId || "",
+                                   action.payload.anchorOpenTag || "",
+                                   action.payload.anchorCloseTag || "")) {
+                    console.warn("Manual anchor creation requires a configured editor", action.payload);
+                }
+                break;
+            case 'create-overlay':
+                backend.renderAnnotations();
+                break;
             case 'show-selection':
                 backend.selection = action.payload;
+                break;
+            case 'reference-overview':
+                if (action.payload.bookId && action.payload.bookId !== root.bookServerIdentifier()) {
+                    break;
+                }
+                backend.referenceOverview = action.payload.references || [];
+                backend.updateReferenceOverviewModel(backend.referenceOverview);
                 break;
             case 'relocate':
                 backend.progress = action.payload.fraction;
@@ -923,7 +1880,7 @@ Kirigami.Page {
                 *, *::before, *::after {
                     color: inherit !important;
                     border-color: currentColor !important;
-                    background-color: #000000 !important;
+                    background-color: transparent !important;
                 }
                 a:any-link {
                     color: #8ab4f8 !important;
@@ -976,28 +1933,6 @@ Kirigami.Page {
             const readerBackgroundOverlay = readerThemeInverted ? 'rgba(0, 0, 0, 0.86)' : readerThemeUsesSystemColors ? kdeBackgroundColor : 'rgba(255, 255, 255, 0.86)';
             const readerBackgroundImage = hasReaderBackground ? `linear-gradient(${readerBackgroundOverlay}, ${readerBackgroundOverlay}), url("http://127.0.0.1:45961/static/background-image")` : '';
             const readerBackgroundFilter = 'none';
-            const readerBackgroundStylesheet = hasReaderBackground ? `
-                body {
-                    isolation: isolate;
-                    position: relative;
-                }
-                body::before {
-                    content: "";
-                    position: fixed;
-                    inset: 0;
-                    z-index: 0;
-                    pointer-events: none;
-                    background-image: ${readerBackgroundImage};
-                    background-position: center center;
-                    background-repeat: no-repeat;
-                    background-size: cover;
-                    filter: ${readerBackgroundFilter};
-                }
-                body > * {
-                    position: relative;
-                    z-index: 1;
-                }
-            ` : '';
             const invertBackgroundStylesheet = hasReaderBackground ? `
                 html, body {
                     color: #ffffff !important;
@@ -1048,6 +1983,45 @@ Kirigami.Page {
                     stroke: currentColor !important;
                 }
             ` : invertStylesheet;
+            const referenceStylesheet = `
+                .bookref,
+                a[data-role="anchor"][data-anchor-type="crossref"],
+                a[data-role="anchor"][href]:not([data-anchor-type="crossref"]) {
+                    border-bottom: 1px dashed currentColor;
+                    color: inherit;
+                    text-decoration: none;
+                    cursor: pointer;
+                }
+                .bookref:hover,
+                a[data-role="anchor"][data-anchor-type="crossref"]:hover,
+                a[data-role="anchor"][href]:not([data-anchor-type="crossref"]):hover {
+                    border-bottom-style: solid;
+                }
+                .bookref::before,
+                a[data-role="anchor"][data-anchor-type="crossref"]::before,
+                a[data-role="anchor"][href]:not([data-anchor-type="crossref"])::before {
+                    content: "";
+                    display: inline-block;
+                    width: 1em;
+                    height: 1em;
+                    margin-right: 0.2em;
+                    vertical-align: text-bottom;
+                    background: currentColor !important;
+                    -webkit-mask: url("http://127.0.0.1:45961/static/book-icon")
+                            no-repeat center;
+                    -webkit-mask-size: contain;
+                        mask: url("http://127.0.0.1:45961/static/book-icon")
+                            no-repeat center;
+                        mask-size: contain;
+                }
+                .bookref:hover::before,
+                a[data-role="anchor"][data-anchor-type="crossref"]:hover::before,
+                a[data-role="anchor"][href]:not([data-anchor-type="crossref"]):hover::before {
+                    opacity: 0.8;
+                }
+`;
+
+            const contentStylesheet = readerThemeInverted ? invertBackgroundStylesheet : (hasReaderBackground || !readerThemeUsesSystemColors ? transparentStylesheet : '');
 
             const style = {
                 layout: {
@@ -1066,7 +2040,7 @@ Kirigami.Page {
                     invert: readerThemeInverted,
                     theme: readerThemeUsesSystemColors ? kdeTheme : defaultTheme,
                     overrideFont: !Config.usePublisherFont,
-                    userStylesheet: (readerThemeInverted ? invertBackgroundStylesheet : readerThemeUsesSystemColors ? '' : transparentStylesheet) + readerBackgroundStylesheet,
+                    userStylesheet: contentStylesheet + referenceStylesheet,
                     readerBackgroundImage: readerBackgroundImage,
                     readerBackgroundFilter: readerBackgroundFilter
                 }
@@ -1112,6 +2086,32 @@ Kirigami.Page {
     }
 
     Shortcut {
+        sequence: "Ctrl+Left"
+        onActivated: view.prevSection()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Right"
+        onActivated: view.nextSection()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Up"
+        onActivated: view.zoomIn()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Down"
+        onActivated: view.zoomOut()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+E"
+        enabled: root.filename !== ""
+        onActivated: root.editBook()
+    }
+
+    Shortcut {
         sequence: "Ctrl+R"
         enabled: !view.loading
         onActivated: root.reloadCurrentBook()
@@ -1124,6 +2124,11 @@ Kirigami.Page {
 
     Shortcut {
         sequence: "Ctrl+B"
-        onActivated: EditorProcess.startDetached(applicationFilePath, [])
+        onActivated: ExternalProcess.startDetached(applicationFilePath)
+    }
+
+    Shortcut {
+        sequence: "Ctrl+S"
+        onActivated: applicationWindow().toggleReaderFullScreen()
     }
 }

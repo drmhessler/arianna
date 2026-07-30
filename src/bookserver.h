@@ -53,9 +53,11 @@ private:
     QMap<QString, QSet<QString>> m_servedFilesByIdentifier;
     QMap<QString, QMap<QString, QString>> m_resourceMapByIdentifier;
     QMap<QString, CachedContainer> m_containerCache;
+    QHash<QString, QString> m_readOnlyFilesByIdentifier;
     QHash<QString, int> m_readerSessionRefCount;
     QHash<QString, QSet<QString>> m_identifiersByReaderSession;
     QHash<QString, QSet<QString>> m_readerSessionsByIdentifier;
+
     bool m_running = false;
     bool m_quitWhenUnused = false;
     bool m_stopScheduled = false;

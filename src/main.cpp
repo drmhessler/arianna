@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText: 2022 Carl Schwan <carl@carlschwan.eu>
 // SPDX-License-Identifier: LGPL-2.1-only or LGPL-3.0-only or LicenseRef-KDE-Accepted-LGPL
 
+#include <QApplication>
 #include <QCommandLineParser>
+#include <QDir>
 #include <QEventLoop>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -19,8 +22,6 @@
 #include <QThread>
 #include <QUrl>
 #include <QtWebEngineQuick>
-
-#include <QApplication>
 
 #include <KAboutData>
 #include <KConfig>
@@ -45,6 +46,7 @@
 #include <QWebEngineProfile>
 #include <QWebEngineUrlRequestInfo>
 #include <QWebEngineUrlRequestInterceptor>
+#include <QWebEngineUrlScheme>
 
 #include "arianna-version.h"
 #include "bookdatabase.h"
@@ -53,6 +55,7 @@
 #include <KConfig>
 #include <KConfigGroup>
 #include <QUuid>
+#include <qlogging.h>
 
 class AriannaWebRequestInterceptor : public QWebEngineUrlRequestInterceptor
 {
@@ -68,7 +71,8 @@ public:
         const QUrl url = info.requestUrl();
         const QString scheme = url.scheme();
 
-        if (scheme == QStringLiteral("qrc") || scheme == QStringLiteral("data") || scheme == QStringLiteral("blob") || scheme == QStringLiteral("about")) {
+        if (scheme == QStringLiteral("qrc") || scheme == QStringLiteral("data") || scheme == QStringLiteral("blob") || scheme == QStringLiteral("about")
+            || scheme == QStringLiteral("epub")) {
             return;
         }
 
@@ -118,6 +122,11 @@ static QString persistentServerToken()
 static QUrl bookServerSessionUrl()
 {
     return QUrl(QStringLiteral("http://127.0.0.1:45961/session"));
+}
+
+static QUrl bookServerReadOnlyBooksUrl()
+{
+    return QUrl(QStringLiteral("http://127.0.0.1:45961/read-only-books"));
 }
 
 static QByteArray waitForNetworkReply(QNetworkReply *reply, bool *ok, int timeoutMs = 1000, bool warnOnFailure = true)
@@ -195,6 +204,36 @@ static bool unregisterBookServerSessionToken(const QString &sessionToken)
     return ok;
 }
 
+static QString registerReadOnlyBook(const QString &sessionToken, const QString &fileName)
+{
+    if (sessionToken.isEmpty() || fileName.isEmpty()) {
+        return {};
+    }
+
+    QNetworkAccessManager manager;
+    QNetworkRequest request(bookServerReadOnlyBooksUrl());
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QByteArrayLiteral("application/json"));
+    request.setRawHeader(QByteArrayLiteral("X-Arianna-Session-Token"), sessionToken.toUtf8());
+
+    QJsonObject payload;
+    payload.insert(QStringLiteral("fileName"), fileName);
+
+    auto *reply = manager.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    bool ok = false;
+    const QByteArray body = waitForNetworkReply(reply, &ok);
+    if (!ok) {
+        return {};
+    }
+
+    const QJsonDocument document = QJsonDocument::fromJson(body);
+    const QString identifier = document.object().value(QStringLiteral("identifier")).toString();
+    if (identifier.isEmpty()) {
+        qWarning() << "BookServer did not return a read-only book identifier";
+    }
+
+    return identifier;
+}
+
 static bool startDetachedBookServer()
 {
     const bool started = QProcess::startDetached(QCoreApplication::applicationFilePath(), {QStringLiteral("--bookserver")});
@@ -226,10 +265,15 @@ static QString ensureBookServerSessionToken(const QString &serverToken)
     return {};
 }
 
-static bool hasBookServerOnlyArgument(int argc, char *argv[])
+static bool hasOptionArgument(int argc, char *argv[], const QStringList &optionNames)
 {
     for (int i = 1; i < argc; ++i) {
-        if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--bookserver")) {
+        const QString argument = QString::fromLocal8Bit(argv[i]);
+        if (argument == QStringLiteral("--")) {
+            return false;
+        }
+
+        if (optionNames.contains(argument)) {
             return true;
         }
     }
@@ -237,16 +281,138 @@ static bool hasBookServerOnlyArgument(int argc, char *argv[])
     return false;
 }
 
+static bool hasBookServerOnlyArgument(int argc, char *argv[])
+{
+    return hasOptionArgument(argc, argv, {QStringLiteral("--bookserver")});
+}
+
+static bool hasEarlyExitArgument(int argc, char *argv[])
+{
+    return hasOptionArgument(argc,
+                             argv,
+                             {
+                                 QStringLiteral("-h"),
+                                 QStringLiteral("--help"),
+                                 QStringLiteral("--help-all"),
+                                 QStringLiteral("-v"),
+                                 QStringLiteral("--version"),
+                                 QStringLiteral("--author"),
+                                 QStringLiteral("--license"),
+                             });
+}
+
+static QString localFilePathFromArgument(const QString &argument, const QString &workingDirectory = {})
+{
+    if (argument.isEmpty()) {
+        return {};
+    }
+
+    const QUrl url(argument);
+    if (url.isLocalFile()) {
+        return QFileInfo(url.toLocalFile()).absoluteFilePath();
+    }
+
+    QFileInfo fileInfo(argument);
+    if (fileInfo.isRelative() && !workingDirectory.isEmpty()) {
+        fileInfo = QFileInfo(QDir(workingDirectory), argument);
+    }
+
+    return fileInfo.absoluteFilePath();
+}
+
+static bool argumentsRequestReadOnly(const QStringList &arguments)
+{
+    for (int i = 1; i < arguments.size(); ++i) {
+        const QString &argument = arguments.at(i);
+        if (argument == QStringLiteral("--")) {
+            return false;
+        }
+        if (argument == QStringLiteral("--read-only") || argument == QStringLiteral("--open-read-only")) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static QString fileArgumentFromActivationArguments(const QStringList &arguments)
+{
+    bool endOfOptions = false;
+    for (int i = 1; i < arguments.size(); ++i) {
+        const QString &argument = arguments.at(i);
+        if (!endOfOptions && argument == QStringLiteral("--")) {
+            endOfOptions = true;
+            continue;
+        }
+        if (!endOfOptions && (argument == QStringLiteral("--read-only") || argument == QStringLiteral("--open-read-only"))) {
+            continue;
+        }
+        if (!endOfOptions && argument.startsWith(QStringLiteral("--"))) {
+            continue;
+        }
+
+        return argument;
+    }
+
+    return {};
+}
+
+static void
+openBookArgument(Navigation *navigation, const QString &argument, const QString &workingDirectory = {}, bool readOnly = false, const QString &sessionToken = {})
+{
+    const QString fileName = localFilePathFromArgument(argument, workingDirectory);
+    if (fileName.isEmpty()) {
+        return;
+    }
+
+    if (readOnly) {
+        const QString identifier = registerReadOnlyBook(sessionToken, fileName);
+        if (identifier.isEmpty()) {
+            qWarning() << "Unable to register read-only book with the Arianna BookServer:" << fileName;
+            return;
+        }
+
+        BookEntry readOnlyEntry;
+        const QFileInfo fileInfo(fileName);
+        readOnlyEntry.filename = fileName;
+        readOnlyEntry.filetitle = fileInfo.fileName();
+        readOnlyEntry.title = fileInfo.completeBaseName();
+        readOnlyEntry.uniqueIdentifier = identifier;
+
+        Q_EMIT navigation->openBook(fileName, {}, {}, readOnlyEntry, true);
+        return;
+    }
+
+    const auto entry = BookDatabase::self().loadEntry(fileName);
+    if (entry) {
+        Q_EMIT navigation->openBook(fileName, entry->locations, entry->currentLocation, *entry, false);
+    } else {
+        Q_EMIT navigation->openBook(fileName, {}, {}, BookEntry{}, false);
+    }
+}
+
 int main(int argc, char *argv[])
 {
-    QNetworkProxyFactory::setUseSystemConfiguration(true);
+    // QWebEngineUrlScheme scheme("epub");
+    // scheme.setSyntax(QWebEngineUrlScheme::Syntax::Host);
+    // scheme.setFlags(QWebEngineUrlScheme::SecureScheme
+    //               | QWebEngineUrlScheme::LocalScheme
+    //               | QWebEngineUrlScheme::LocalAccessAllowed);
+    // scheme.setDefaultPort(0);
+    // QWebEngineUrlScheme::registerScheme(scheme);
+
     const bool requestedBookServerOnly = hasBookServerOnlyArgument(argc, argv);
+    const bool exitsBeforeOpeningUi = hasEarlyExitArgument(argc, argv);
+    if (!requestedBookServerOnly && !exitsBeforeOpeningUi) {
+        QtWebEngineQuick::initialize();
+    }
+
+    QNetworkProxyFactory::setUseSystemConfiguration(true);
 
     std::unique_ptr<QCoreApplication> app;
-    if (requestedBookServerOnly) {
+    if (requestedBookServerOnly || exitsBeforeOpeningUi) {
         app = std::make_unique<QCoreApplication>(argc, argv);
     } else {
-        QtWebEngineQuick::initialize();
         auto guiApp = std::make_unique<QApplication>(argc, argv);
 
         // Default to org.kde.desktop style unless the user forces another style
@@ -289,13 +455,17 @@ int main(int argc, char *argv[])
     parser.setApplicationDescription(i18n("Epub reader"));
     parser.addPositionalArgument(QStringLiteral("file"), i18n("Epub file to open"));
     QCommandLineOption bookServerOnlyOption(QStringLiteral("bookserver"), i18n("Start only the local book server without opening the reader UI"));
+    QCommandLineOption readOnlyOption(QStringList{QStringLiteral("read-only"), QStringLiteral("open-read-only")},
+                                      i18n("Open the book without adding it to the library"));
     parser.addOption(bookServerOnlyOption);
+    parser.addOption(readOnlyOption);
 
     about.setupCommandLine(&parser);
     parser.process(*app);
     about.processCommandLine(&parser);
 
     const bool bookServerOnly = parser.isSet(bookServerOnlyOption);
+    const bool readOnly = parser.isSet(readOnlyOption);
     const QString serverToken = persistentServerToken();
     std::signal(SIGINT, handleUnixSignal);
     std::signal(SIGTERM, handleUnixSignal);
@@ -305,14 +475,8 @@ int main(int argc, char *argv[])
         if (!bookServer.isRunning()) {
             return 1;
         }
-
-        qWarning() << "Arianna BookServer running without UI";
-
         return QCoreApplication::exec();
     }
-    auto *webProfile = QWebEngineProfile::defaultProfile();
-    webProfile->setHttpCacheType(QWebEngineProfile::NoCache);
-    webProfile->setPersistentCookiesPolicy(QWebEngineProfile::NoPersistentCookies);
 
     const QString sessionToken = ensureBookServerSessionToken(serverToken);
     if (sessionToken.isEmpty()) {
@@ -320,7 +484,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    webProfile->setUrlRequestInterceptor(new AriannaWebRequestInterceptor(sessionToken, webProfile));
+    // webProfile->installUrlSchemeHandler("epub", new EpubSchemeHandler(webProfile));
     QObject::connect(app.get(), &QCoreApplication::aboutToQuit, app.get(), [sessionToken] {
         unregisterBookServerSessionToken(sessionToken);
     });
@@ -329,6 +493,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextObject(new KLocalizedQmlContext(&engine));
     engine.rootContext()->setContextProperty(QStringLiteral("applicationFilePath"), QCoreApplication::applicationFilePath());
     engine.rootContext()->setContextProperty(QStringLiteral("serverToken"), serverToken);
+    engine.rootContext()->setContextProperty(QStringLiteral("bookServerSessionToken"), sessionToken);
     engine.rootContext()->setContextProperty(QStringLiteral("bookServerPort"), 45961);
     engine.loadFromModule("org.kde.arianna", "Main");
     if (engine.rootObjects().isEmpty()) {
@@ -338,13 +503,16 @@ int main(int argc, char *argv[])
 
     KDBusService service(KDBusService::Multiple);
 
-    auto navigation = engine.singletonInstance<Navigation *>("org.kde.arianna", "Navigation");
+    auto *navigation = engine.singletonInstance<Navigation *>("org.kde.arianna", "Navigation");
+    if (navigation) {
+        navigation->setWebEngineSessionToken(sessionToken);
+    }
     qDebug() << "Arianna BookServer session registered:" << sessionToken;
 
     QObject::connect(&service,
                      &KDBusService::activateRequested,
                      &engine,
-                     [&engine, navigation](const QStringList &arguments, const QString & /*workingDirectory*/) {
+                     [&engine, navigation, sessionToken](const QStringList &arguments, const QString &workingDirectory) {
                          const auto rootObjects = engine.rootObjects();
                          for (auto obj : rootObjects) {
                              auto view = qobject_cast<QQuickWindow *>(obj);
@@ -352,13 +520,9 @@ int main(int argc, char *argv[])
                                  KWindowSystem::updateStartupId(view);
                                  KWindowSystem::activateWindow(view);
 
-                                 if (arguments.count() > 1) {
-                                     const auto entry = BookDatabase::self().loadEntry(arguments[1]);
-                                     if (entry) {
-                                         Q_EMIT navigation->openBook(arguments[1], entry->locations, entry->currentLocation, *entry);
-                                     } else {
-                                         Q_EMIT navigation->openBook(arguments[1], {}, {}, BookEntry{});
-                                     }
+                                 const QString fileArgument = fileArgumentFromActivationArguments(arguments);
+                                 if (!fileArgument.isEmpty()) {
+                                     openBookArgument(navigation, fileArgument, workingDirectory, argumentsRequestReadOnly(arguments), sessionToken);
                                  }
                                  return;
                              }
@@ -367,12 +531,7 @@ int main(int argc, char *argv[])
 
     const QStringList args = parser.positionalArguments();
     if (!args.isEmpty()) {
-        const auto entry = BookDatabase::self().loadEntry(args[0]);
-        if (entry) {
-            Q_EMIT navigation->openBook(args[0], entry->locations, entry->currentLocation, *entry);
-        } else {
-            Q_EMIT navigation->openBook(args[0], {}, {}, BookEntry{});
-        }
+        openBookArgument(navigation, args[0], {}, readOnly, sessionToken);
     }
 
     return QCoreApplication::exec();

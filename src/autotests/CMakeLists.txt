@@ -14,3 +14,9 @@ ecm_add_test(epubcontainertest.cpp
     LINK_LIBRARIES arianna_static Qt::Test KF6::Archive
     NAME_PREFIX "arianna-"
 )
+
+ecm_add_test(booktruthstoretest.cpp
+    TEST_NAME booktruthstoretest
+    LINK_LIBRARIES arianna_static Qt::Test KF6::Archive
+    NAME_PREFIX "arianna-"
+)

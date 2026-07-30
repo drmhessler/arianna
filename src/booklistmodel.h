@@ -134,6 +134,12 @@ public:
     /// \param value The value to set it to.
     Q_INVOKABLE void setBookData(const QString &fileName, const QString &property, const QString &value);
 
+    /// \brief Refresh an existing book entry from the current EPUB file contents.
+    ///
+    /// This updates metadata and cover data for books that are already in the
+    /// library. Files that are not in the library are left untouched.
+    Q_INVOKABLE BookEntry refreshBookFromFile(const QString &fileName, bool refreshCover = true);
+
     /// Delete a book from the model, and optionally delete the entry from file storage.
     /// \param fileName The filename of the book to remove.
     /// \param deleteFile Whether to also delete the file from the disk.
@@ -167,4 +173,5 @@ private:
     std::unique_ptr<Private> d;
 
     Q_SLOT void contentModelItemsInserted(QModelIndex index, int first, int last);
+    Q_SLOT void scheduleDatabaseSync();
 };

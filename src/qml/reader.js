@@ -4,15 +4,26 @@
 import './foliate-js/view.js'
 import { FootnoteHandler } from './foliate-js/footnotes.js'
 import { toPangoMarkup } from './markup.js'
-import { searchMatcher } from './foliate-js/search.js'
-import { textWalker } from './foliate-js/text-walker.js'
+import { Overlayer } from './foliate-js/overlayer.js'
+
+const baseUrl = "http://127.0.0.1:45961"; // baseURL for bookserver
 
 let backend;
+let openRequest = 0
 const pendingActions = []
 const dispatchPinchZoom = () =>
-    dispatch({ type: 'pinch-zoom', payload: { scale: globalThis.visualViewport.scale }})
+    dispatch({ type: 'pinch-zoom', payload: { scale: globalThis.visualViewport.scale } })
 
-window.onload = () => {
+const yieldToBrowser = () => new Promise(resolve => setTimeout(resolve, 0))
+
+let backendInitStarted = false
+const initBackend = () => {
+    if (backendInitStarted) return
+    if (!globalThis.qt?.webChannelTransport || !globalThis.QWebChannel) {
+        globalThis.addEventListener('load', initBackend, { once: true })
+        return
+    }
+    backendInitStarted = true
     new QWebChannel(qt.webChannelTransport, (channel) => {
         backend = channel.objects.backend;
         while (pendingActions.length > 0) {
@@ -23,12 +34,52 @@ window.onload = () => {
     })
 }
 
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initBackend, { once: true })
+} else {
+    initBackend()
+}
+
 const dispatch = action => {
     if (backend) {
         backend.dispatch(action)
     } else {
         pendingActions.push(action)
     }
+}
+
+const closeDialog = dialog => {
+    if (dialog?.open) dialog.close()
+}
+
+let referenceDialogInitialized = false
+const initReferenceDialog = () => {
+    if (referenceDialogInitialized) return
+    const dialog = document.getElementById('reference-dialog')
+    const closeButton = document.getElementById('closeButton')
+    if (dialog && closeButton) {
+        closeButton.addEventListener('click', event => {
+            event.preventDefault()
+            closeDialog(dialog)
+        })
+    }
+
+    const createDialog = document.getElementById('create-reference-dialog')
+    const closeCreateButton = document.getElementById('closeCreateReferenceButton')
+    if (createDialog && closeCreateButton) {
+        closeCreateButton.addEventListener('click', event => {
+            event.preventDefault()
+            closeDialog(createDialog)
+        })
+    }
+
+    referenceDialogInitialized = true
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initReferenceDialog, { once: true })
+} else {
+    initReferenceDialog()
 }
 
 let selectionAction
@@ -129,10 +180,368 @@ const isFBZ = ({ name, type }) =>
     type === 'application/x-zip-compressed-fb2'
     || name.endsWith('.fb2.zip') || name.endsWith('.fbz')
 
-const open = async (url, initCfi) => {
+const closeCurrentReader = () => {
+    const reader = globalThis.reader
+    if (!reader) return
+    try {
+        reader.close()
+    } catch (e) {
+        console.warn('Failed to close reader', e)
+    }
+    if (globalThis.reader === reader) globalThis.reader = null
+}
+
+const requestJson = (method, url, body = null) => new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open(method, url)
+    if (body !== null)
+        request.setRequestHeader("Content-Type", "application/json")
+
+    request.onreadystatechange = function () {
+        if (request.readyState !== 4)
+            return
+
+        if (request.status < 200 || request.status >= 300) {
+            const error = new Error(request.responseText || `HTTP ${request.status}`)
+            error.status = request.status
+            error.responseText = request.responseText
+            try {
+                error.responseJson = request.responseText ? JSON.parse(request.responseText) : null
+            } catch (e) {
+                error.responseJson = null
+            }
+            reject(error)
+            return
+        }
+
+        if (!request.responseText) {
+            resolve(null)
+            return
+        }
+
+        try {
+            resolve(JSON.parse(request.responseText))
+        } catch (e) {
+            reject(e)
+        }
+    }
+
+    request.send(body === null ? null : JSON.stringify(body))
+})
+
+const crossReferenceAnchorSelector = 'a[data-role="anchor"][data-anchor-type="crossref"][id]'
+const intraBookReferenceAnchorSelector = 'a[data-role="anchor"][href][id]:not([data-anchor-type="crossref"])'
+const epubAnchorSelector = '[data-role="anchor"]'
+const legacyBookReferenceSelector = '.bookref[data-ref]'
+const bookReferenceListSelector = `${crossReferenceAnchorSelector}, ${intraBookReferenceAnchorSelector}, ${legacyBookReferenceSelector}`
+const bookReferenceClickSelector = `${crossReferenceAnchorSelector}, ${legacyBookReferenceSelector}`
+
+const cfiFilter = node =>
+    node.nodeType === Node.ELEMENT_NODE
+    && (node.matches?.(epubAnchorSelector) || node.classList?.contains('bookref'))
+        ? NodeFilter.FILTER_SKIP
+        : NodeFilter.FILTER_ACCEPT
+
+const referenceIdFromElement = el =>
+    el.matches?.(crossReferenceAnchorSelector) || el.matches?.(intraBookReferenceAnchorSelector)
+        ? el.id
+        : el.dataset.ref
+
+const referenceHrefFromElement = (section, el) => {
+    const id = el.id || el.getAttribute('name') || ""
+    if (section?.id && id)
+        return `${section.id}#${id}`
+
+    const href = el.getAttribute('href') ?? ""
+    return href && !/^(?!blob)\w+:/i.test(href) ? href : ""
+}
+
+const rangeForReferenceElement = (doc, el) => {
+    const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+        acceptNode: node =>
+            compactText(node.nodeValue).length > 0
+                ? NodeFilter.FILTER_ACCEPT
+                : NodeFilter.FILTER_REJECT,
+    })
+    let first = null
+    let last = null
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        first ??= node
+        last = node
+    }
+
+    const range = doc.createRange()
+    if (first && last) {
+        range.setStart(first, 0)
+        range.setEnd(last, last.nodeValue.length)
+    } else {
+        range.selectNode(el)
+    }
+    return range
+}
+
+const setReferenceHeader = (header, anchorTitle, fallbackTitle) => {
+    if (!header)
+        return
+
+    const title = anchorTitle?.trim()
+    if (!title) {
+        header.textContent = fallbackTitle || "Referenz"
+        return
+    }
+
+    header.replaceChildren(
+        document.createTextNode("Referenz"),
+        document.createElement("br"),
+        document.createTextNode(title)
+    )
+}
+
+const compactText = value => (value ?? "").replace(/\s+/g, " ").trim()
+
+const authorsForBook = book => {
+    if (Array.isArray(book?.author))
+        return book.author
+    if (book?.author)
+        return [book.author]
+    return []
+}
+
+const normalizedAuthorSet = book =>
+    new Set(authorsForBook(book).map(author => compactText(author).toLocaleLowerCase()).filter(Boolean))
+
+const bookHasAnyAuthor = (book, authors) =>
+    authorsForBook(book).some(author => authors.has(compactText(author).toLocaleLowerCase()))
+
+const bookTitle = book => book?.title || book?.id || ""
+
+const compareBooksByTitle = (left, right) =>
+    bookTitle(left).localeCompare(bookTitle(right), undefined, { sensitivity: "base" })
+    || (left?.id ?? "").localeCompare(right?.id ?? "", undefined, { sensitivity: "base" })
+
+const optionLabelForBook = book => {
+    const authors = authorsForBook(book).join(", ")
+    const title = bookTitle(book)
+    return authors ? `${title} - ${authors}` : title
+}
+
+const appendTargetBookGroup = (select, label, books, selectedBookId) => {
+    if (!books.length)
+        return
+
+    const group = document.createElement("optgroup")
+    group.label = label
+
+    for (const book of books) {
+        const option = document.createElement("option")
+        option.value = book.id
+        option.textContent = optionLabelForBook(book)
+        option.selected = book.id === selectedBookId
+        group.append(option)
+    }
+
+    select.append(group)
+}
+
+const populateTargetBookSelect = async (targetBookSelect, sourceBookId) => {
+    const data = await requestJson("GET", `${baseUrl}/books`)
+    const booksById = new Map((Array.isArray(data) ? data : data?.books ?? [])
+        .filter(book => book?.id)
+        .map(book => [book.id, book]))
+
+    if (sourceBookId && !booksById.has(sourceBookId))
+        booksById.set(sourceBookId, { id: sourceBookId, title: sourceBookId, author: [] })
+
+    const books = Array.from(booksById.values()).sort(compareBooksByTitle)
+    const ownBook = sourceBookId ? booksById.get(sourceBookId) : null
+    const ownAuthors = normalizedAuthorSet(ownBook)
+    const sameAuthorBooks = ownAuthors.size
+        ? books.filter(book => book.id !== sourceBookId && bookHasAnyAuthor(book, ownAuthors)).sort(compareBooksByTitle)
+        : []
+    const sameAuthorBookIds = new Set(sameAuthorBooks.map(book => book.id))
+    const otherBooks = books
+        .filter(book => book.id !== sourceBookId && !sameAuthorBookIds.has(book.id))
+        .sort(compareBooksByTitle)
+
+    targetBookSelect.textContent = ""
+
+    const placeholder = document.createElement("option")
+    placeholder.value = ""
+    placeholder.textContent = "-- Bitte wählen --"
+    placeholder.selected = !ownBook
+    targetBookSelect.append(placeholder)
+
+    appendTargetBookGroup(targetBookSelect, "Dieses Buch", ownBook ? [ownBook] : [], sourceBookId)
+    appendTargetBookGroup(targetBookSelect, "Bücher vom selben Autor", sameAuthorBooks, sourceBookId)
+    appendTargetBookGroup(targetBookSelect, "Andere Bücher", otherBooks, sourceBookId)
+}
+
+const optionLabelForTargetLocation = location => {
+    const base = location.location || location.id || ""
+    const preview = (location.previewHtml || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+    return preview ? `${base} - ${preview.slice(0, 80)}` : base
+}
+
+const setTargetLocationFields = (option, targetAnchorIdInput, targetLocationInput, targetPreviewHtmlInput, targetCFIInput) => {
+    const hasSelection = Boolean(option?.value)
+    if (targetLocationInput)
+        targetLocationInput.value = hasSelection ? option.value : ""
+    if (targetAnchorIdInput)
+        targetAnchorIdInput.value = hasSelection ? option.dataset.targetAnchorId ?? option.value : ""
+    if (targetPreviewHtmlInput)
+        targetPreviewHtmlInput.value = hasSelection ? option.dataset.previewHtml ?? "" : ""
+    if (targetCFIInput) {
+        if (hasSelection)
+            targetCFIInput.value = ""
+        targetCFIInput.disabled = hasSelection
+    }
+}
+
+const populateTargetLocationSelect = async (targetBookId, targetLocationSelect, targetAnchorIdInput, targetLocationInput, targetPreviewHtmlInput, targetCFIInput) => {
+    if (!targetLocationSelect)
+        return
+
+    targetLocationSelect.textContent = ""
+    setTargetLocationFields(null, targetAnchorIdInput, targetLocationInput, targetPreviewHtmlInput, targetCFIInput)
+
+    const placeholder = document.createElement("option")
+    placeholder.value = ""
+    placeholder.textContent = "-- Keine Auswahl --"
+    targetLocationSelect.append(placeholder)
+
+    if (!targetBookId)
+        return
+
+    const data = await requestJson("GET", `${baseUrl}/${encodeURIComponent(targetBookId)}/targetLocations`)
+    const locations = Array.isArray(data) ? data : data?.targetLocations ?? []
+
+    for (const location of locations) {
+        if (!location?.id || !location?.location)
+            continue
+
+        const option = document.createElement("option")
+        option.value = location.location
+        option.textContent = optionLabelForTargetLocation(location)
+        option.dataset.targetAnchorId = location.id
+        option.dataset.location = location.location
+        option.dataset.previewHtml = location.previewHtml ?? ""
+        targetLocationSelect.append(option)
+    }
+}
+
+const createReference = (sourceBookId, cfi, text, callback, options = {}) => {
+    const createReferenceDialog = document.getElementById("create-reference-dialog")
+    const createReferenceForm = document.getElementById("createReferenceForm")
+    const targetBookSelect = document.getElementById("targetBookId")
+    const targetLocationSelect = document.getElementById("targetLocationSelect")
+    const targetAnchorIdInput = document.getElementById("targetAnchorId")
+    const targetCFIInput = document.getElementById("targetCFI")
+    const targetLocationInput = document.getElementById("targetLocation")
+    const targetPreviewHtmlInput = document.getElementById("targetPreviewHtml")
+
+    if (!createReferenceDialog || !createReferenceForm || !targetBookSelect || !targetLocationSelect) {
+        console.warn("Create reference dialog is missing required elements")
+        callback(false)
+        return
+    }
+
+    createReferenceForm.reset()
+    populateTargetLocationSelect("", targetLocationSelect, targetAnchorIdInput, targetLocationInput, targetPreviewHtmlInput, targetCFIInput)
+    populateTargetBookSelect(targetBookSelect, sourceBookId)
+        .then(() => {
+            const refreshTargetLocations = () => {
+                if (targetCFIInput)
+                    targetCFIInput.value = ""
+                populateTargetLocationSelect(targetBookSelect.value, targetLocationSelect, targetAnchorIdInput, targetLocationInput, targetPreviewHtmlInput, targetCFIInput)
+                    .catch(error => console.warn("Unable to load target locations", error))
+            }
+            targetBookSelect.oninput = refreshTargetLocations
+            targetBookSelect.onchange = refreshTargetLocations
+            targetLocationSelect.onchange = () =>
+                setTargetLocationFields(targetLocationSelect.selectedOptions[0], targetAnchorIdInput, targetLocationInput, targetPreviewHtmlInput, targetCFIInput)
+            if (targetCFIInput) {
+                targetCFIInput.oninput = () => {
+                    if (targetCFIInput.value.trim()) {
+                        targetLocationSelect.value = ""
+                        setTargetLocationFields(null, targetAnchorIdInput, targetLocationInput, targetPreviewHtmlInput, targetCFIInput)
+                    }
+                }
+            }
+
+            if (targetBookSelect.value)
+                refreshTargetLocations()
+
+            createReferenceForm.onsubmit = event => {
+                event.preventDefault()
+                const hasSelectedTargetLocation = Boolean(targetLocationSelect.value)
+                if (hasSelectedTargetLocation)
+                    setTargetLocationFields(targetLocationSelect.selectedOptions[0], targetAnchorIdInput, targetLocationInput, targetPreviewHtmlInput, targetCFIInput)
+
+                const targetLocation = hasSelectedTargetLocation ? targetLocationInput?.value ?? "" : ""
+                const targetAnchorId = hasSelectedTargetLocation ? targetAnchorIdInput?.value || targetLocation : ""
+                const targetPreviewHtml = hasSelectedTargetLocation ? targetPreviewHtmlInput?.value ?? "" : ""
+                const targetCFI = hasSelectedTargetLocation ? "" : (targetCFIInput?.value.trim() ?? "")
+
+                if (!targetBookSelect.value || (!hasSelectedTargetLocation && !targetCFI)) {
+                    console.warn("Reference target is missing")
+                    callback(false)
+                    return
+                }
+
+                requestJson("POST", `${baseUrl}/${encodeURIComponent(sourceBookId)}/ref`, {
+                    cfi,
+                    sourceAnchorId: options.sourceAnchorId ?? "",
+                    text,
+                    targetBookId: targetBookSelect.value,
+                    targetAnchorId,
+                    targetLocation,
+                    targetPreviewHtml,
+                    targetCFI,
+                })
+                    .then(() => {
+                        closeDialog(createReferenceDialog)
+                        callback(true)
+                    })
+                    .catch(error => {
+                        if (error.status === 409 && error.responseJson?.error === "manualAnchorRequired") {
+                            dispatch({
+                                type: 'manual-anchor-required',
+                                payload: {
+                                    ...error.responseJson,
+                                    cfi: error.responseJson.cfi || cfi,
+                                    text: error.responseJson.text || text
+                                }
+                            })
+                            if (error.responseJson.referenceStored)
+                                closeDialog(createReferenceDialog)
+                            callback(Boolean(error.responseJson.referenceStored))
+                            return
+                        }
+
+                        console.warn("Unable to create reference", error)
+                        callback(false)
+                    })
+            }
+
+            if (!createReferenceDialog.open)
+                createReferenceDialog.showModal()
+        })
+        .catch(error => {
+            console.warn("Unable to load book list", error)
+            callback(false)
+        })
+}
+
+const open = async (url, initCfi, bookId) => {
+    const request = ++openRequest
+    closeCurrentReader()
+
     const response = await fetch(url);
     const file = await response.blob();
     file.name = response.url.split('/').pop();
+    await yieldToBrowser()
+
+    if (request !== openRequest) return
 
     if (!file.size) {
         dispatch({ type: 'book-error', payload: 'not-found' })
@@ -142,6 +551,7 @@ const open = async (url, initCfi) => {
     let book
     if (await isZip(file)) {
         const loader = await makeZipLoader(file)
+        await yieldToBrowser()
         const { entries } = loader
         if (isCBZ(file)) {
             const { makeComicBook } = await import('./foliate-js/comic-book.js')
@@ -154,6 +564,7 @@ const open = async (url, initCfi) => {
         } else {
             const { EPUB } = await import('./foliate-js/epub.js')
             book = await new EPUB(loader).init()
+            await yieldToBrowser()
         }
     }
     else if (await isPDF(file)) {
@@ -171,18 +582,36 @@ const open = async (url, initCfi) => {
         }
     }
 
+    if (request !== openRequest) {
+        book?.destroy?.()
+        return
+    }
+
     if (!book) {
         dispatch({ type: 'book-error', payload: 'unsupported-type' }) //payload type will change here.
         return
     }
-    const reader = new Reader(book, initCfi)
+    const reader = new Reader(book, initCfi, bookId)
     globalThis.reader = reader
     await reader.init()
+    if (request !== openRequest) {
+        if (globalThis.reader === reader) globalThis.reader = null
+        reader.close()
+        return
+    }
     dispatch({ type: 'book-ready', payload: { book, reader } })
 }
 
-globalThis.openSync = function (url, initCfi) {
-    open(url, initCfi);
+globalThis.openSync = function (url, initCfi, bookId) {
+    open(url, initCfi, bookId).catch(e => {
+        console.error(e)
+        dispatch({ type: 'book-error', payload: e?.message ?? String(e) })
+    });
+}
+
+globalThis.closeReader = () => {
+    openRequest += 1
+    closeCurrentReader()
 }
 
 const getCSS = ({
@@ -238,6 +667,9 @@ const getCSS = ({
         tab-size: 2;
     }
 `, `
+    a[href]:is(:link, :visited, :hover, :active, :focus):not([href*=":"]):not([href^="//"]) {
+        text-decoration: none !important;
+    }
     ${invert ? `
     @media screen {
         html, body {
@@ -400,20 +832,116 @@ class CursorAutohider {
 
 // Create the Reader class : init->'foliate-view', handleEvents()
 
+class BookReferenceHandler {
+    constructor(bookId) {
+        this.bookId = bookId;
+    }
+
+    async handle(book, event) {
+        const { ref, text = "", title = "" } = event.detail;
+        if (!ref)
+            return
+
+        const source = ref;
+        const dialog = document.getElementById("reference-dialog");
+        const preview = document.getElementById("referencePreview");
+        if (!dialog) return
+        const sourceInput = dialog.querySelector('[name="source"]');
+        if (sourceInput) {
+            sourceInput.value = source;
+        }
+
+        const ReferenceResponse = await fetch(
+            `${baseUrl}/${encodeURIComponent(this.bookId)}/ref/${encodeURIComponent(ref)}`
+        );
+        if (ReferenceResponse.status === 404) {
+            closeDialog(dialog)
+            createReference(this.bookId, "", text, success => {
+                if (success) console.log("Reference stored for existing source anchor:", ref);
+                else console.log("Reference not stored for existing source anchor:", ref);
+            }, {
+                sourceAnchorId: ref,
+            })
+            return
+        }
+        if (!ReferenceResponse.ok) {
+            throw new Error(`Unable to load reference ${ref}: HTTP ${ReferenceResponse.status}`)
+        }
+        const reference = await ReferenceResponse.json();
+        if (!dialog.open) dialog.showModal();
+        if (!preview) {
+            console.warn('referencePreview element not found');
+        } else {
+            const previewHtml = reference.target?.previewHtml ?? reference.previewHtml;
+            preview.style.textAlign = 'justify';
+
+            if (previewHtml) {
+                // If previewHtml looks like HTML, render it as HTML; otherwise use textContent.
+                if (/<[^>]+>/.test(previewHtml)) {
+                    preview.innerHTML = `<div style="text-align: justify;">${previewHtml}</div>`;
+                } else {
+                    preview.textContent = previewHtml;
+                }
+            } else {
+                preview.textContent = 'Keine Vorschau verfügbar';
+            }
+        }
+
+        setReferenceHeader(
+            document.getElementById("referenceHeader"),
+            title,
+            reference.target?.shortName ?? reference.shortName ?? "Referenz"
+        )
+
+        // Preview oder Navigation...
+        const openRefBtn = document.getElementById('openReferenceButton');
+        if (openRefBtn) {
+            openRefBtn.onclick = () => {
+                const targetLocation = reference.target?.location ?? reference.location;
+                if (!targetLocation) {
+                    console.warn('No target location available for reference');
+                    return;
+                }
+
+                const sourceTitle = book?.metadata?.title || book?.metadata?.identifier || '';
+
+                try {
+                    if (backend && typeof backend.openReferencePage === 'function') {
+                        closeDialog(dialog);
+                        backend.openReferencePage(
+                            targetLocation,
+                            reference.target?.entry ?? null,
+                            reference.target?.readOnly ?? false,
+                            sourceTitle
+                        );
+                    } else {
+                        console.warn('backend.openReferencePage is not available');
+                    }
+                } catch (e) {
+                    console.warn('Failed to open reference page', e);
+                }
+            };
+        }
+    }
+}
+
 class Reader {
     autohideCursor
     #cursorAutohider = new CursorAutohider(
         document.documentElement, () => this.autohideCursor)
     #footnoteHandler = new FootnoteHandler()
+    #bookReferenceHandler;
     style = {
         spacing: 1.4,
         justify: true,
         hyphenate: true,
         invert: false,
     }
-    constructor(book, initCfi) {
+    constructor(book, initCfi, bookId) {
         this.book = book
         this.initCfi = initCfi;
+        this.bookId = bookId || book.metadata.identifier;
+        this.#bookReferenceHandler = new BookReferenceHandler(this.bookId);
         if (book.metadata?.description)
             book.metadata.description = toPangoMarkup(book.metadata.description)
         this.pageTotal = book.pageList
@@ -465,10 +993,11 @@ class Reader {
             footnoteDialog.showModal()
             dispatch({ type: 'dialog-open' })
         })
+
     }
     async init() {
         this.view = document.createElement('foliate-view')
-        console.log('window.innerHeight', window.innerHeight)
+        this.view.cfiFilter = cfiFilter
         this.view.height = window.innerHeight;
         this.view.width = window.innerWidth;
         document.body.append(this.view)
@@ -476,6 +1005,86 @@ class Reader {
         await this.view.open(this.book)
         this.#handleEvents()
         await this.view.init({ lastLocation: this.initCfi })
+    }
+    close() {
+        try {
+            footnoteDialog.close()
+        } catch (e) {
+            // The dialog may already be closed or unavailable during teardown.
+        }
+        try {
+            document.getElementById('reference-dialog')?.close()
+        } catch (e) {
+            // The dialog may already be closed or unavailable during teardown.
+        }
+        selectionAction?.()
+        selectionAction = null
+        this.view?.close()
+        this.view?.remove()
+        this.book?.destroy?.()
+        this.view = null
+        this.book = null
+    }
+    async referenceList() {
+        const sections = this.book?.sections ?? []
+        const references = []
+        const seen = new Set()
+
+        for (const [index, section] of sections.entries()) {
+            if (!section?.createDocument) continue
+
+            const doc = await section.createDocument()
+            const elements = Array.from(doc.querySelectorAll(bookReferenceListSelector))
+
+            for (const el of elements) {
+                const ref = referenceIdFromElement(el)
+                if (!ref) continue
+
+                const hrefLocation = referenceHrefFromElement(section, el)
+                const range = rangeForReferenceElement(doc, el)
+                let cfi = ""
+                let sectionLabel = section.id ?? ""
+                try {
+                    if (!hrefLocation)
+                        cfi = this.view.getCFI(index, range, cfiFilter)
+                    sectionLabel = this.view.getProgressOf(index, range)?.tocItem?.label ?? sectionLabel
+                } catch (e) {
+                    console.warn(`Unable to locate reference ${ref}`, e)
+                } finally {
+                    range.detach?.()
+                }
+
+                const location = hrefLocation || cfi
+                const title = compactText(el.getAttribute('title'))
+                const text = compactText(el.textContent)
+                const tooltip = title || compactText(el.getAttribute('aria-label')) || text || ref
+                const key = `${index}:${ref}:${location}`
+                if (seen.has(key)) continue
+                seen.add(key)
+
+                references.push({
+                    ref,
+                    title,
+                    text,
+                    tooltip,
+                    location,
+                    section: compactText(sectionLabel),
+                    index,
+                })
+            }
+        }
+
+        return references
+            .sort((a, b) => a.index - b.index || a.ref.localeCompare(b.ref))
+    }
+    refreshReferenceOverview() {
+        this.referenceList()
+            .then(references =>
+                dispatch({ type: 'reference-overview', payload: { bookId: this.bookId, references } }))
+            .catch(error => {
+                console.warn('Unable to build reference overview', error)
+                dispatch({ type: 'reference-overview', payload: { bookId: this.bookId, references: [] } })
+            })
     }
     setAppearance({ style, layout, autohideCursor }) {
         Object.assign(this.style, style)
@@ -485,13 +1094,8 @@ class Reader {
         $style.setProperty('--light-fg', theme.light.fg)
         $style.setProperty('--dark-bg', theme.dark.bg)
         $style.setProperty('--dark-fg', theme.dark.fg)
-        if (style.readerBackgroundImage) {
-            $style.setProperty('--arianna-reader-background-image', style.readerBackgroundImage)
-            $style.setProperty('--arianna-reader-background-filter', style.readerBackgroundFilter ?? 'none')
-        } else {
-            $style.setProperty('--arianna-reader-background-image', 'none')
-            $style.removeProperty('--arianna-reader-background-filter')
-        }
+        $style.setProperty('--arianna-reader-background-image', 'none')
+        $style.removeProperty('--arianna-reader-background-filter')
         const renderer = this.view?.renderer
         if (renderer) {
             if (style.readerBackgroundImage) {
@@ -569,9 +1173,10 @@ class Reader {
                 const node = range.startContainer
                 const el = node.nodeType === 1 ? node : node.parentElement
                 const { writingMode } = defaultView.getComputedStyle(el)
-                draw(Overlayer[color], { writingMode })
+
+                draw(Overlayer[color], { writingMode, tooltip: annotation.note || "" })
             }
-            else draw(Overlayer.highlight, { color })
+            else draw(Overlayer.highlight, { color, tooltip: annotation.note || "" })
         })
         this.view.addEventListener('external-link', e => {
             e.preventDefault()
@@ -582,6 +1187,10 @@ class Reader {
                 console.warn(err)
                 this.view.goTo(e.detail.href)
             }))
+        this.view.addEventListener('book-reference', e =>
+            this.#bookReferenceHandler.handle(this.book, e)
+                ?.catch(err => console.warn(err))
+        )
         this.view.addEventListener('load', e => this.#onLoad(e))
         this.view.history.addEventListener('index-change', e => {
             const { canGoBack, canGoForward } = e.target
@@ -590,13 +1199,17 @@ class Reader {
     }
     #onLoad(e) {
         const { doc, index } = e.detail
-        for (const img of doc.querySelectorAll('img'))
-            img.addEventListener('dblclick', () => fetch(img.src)
+
+        doc.addEventListener('dblclick', event => {
+            const img = event.target.closest?.('img')
+            if (!img) return
+            fetch(img.src)
                 .then(res => res.blob())
                 .then(blob => Promise.all([blobToBase64(blob), blob.type]))
                 .then(([base64, mimetype]) =>
                     dispatch({ type: 'show-image', payload: { base64, mimetype } }))
-                .catch(e => console.error(e)))
+                .catch(e => console.error(e))
+        })
 
         let isSelecting = false
         doc.addEventListener('pointerdown', () => isSelecting = true)
@@ -606,7 +1219,7 @@ class Reader {
             const range = getSelectionRange(sel)
             if (!range) return
             const pos = getPosition(range)
-            const value = this.view.getCFI(index, range)
+            const value = this.view.getCFI(index, range, cfiFilter)
             const lang = getLang(range.commonAncestorContainer)
             const text = sel.toString()
             this.#showSelection({ index, range, lang, value, pos, text })
@@ -625,7 +1238,25 @@ class Reader {
                 if (selRange.compareBoundaryPoints(Range.END_TO_END, lastLocation.range) >= 0)
                     this.view.next()
             }, 1000))
+        doc.addEventListener('click', event => {
+            const el = event.target.closest?.(bookReferenceClickSelector)
+            if (!el) return
+            const ref = referenceIdFromElement(el)
+            if (!ref) return
 
+            event.preventDefault()
+            event.stopPropagation()
+
+            this.view.dispatchEvent(new CustomEvent('book-reference', {
+                detail: {
+                    ref,
+                    text: el.textContent ?? "",
+                    title: el.getAttribute("title") ?? "",
+                    role: el.dataset.role,
+                    anchorType: el.dataset.anchorType
+                }
+            }))
+        })
         this.#cursorAutohider.cloneFor(doc.documentElement)
     }
     #showAnnotation({ index, range, value, pos }) {
@@ -643,8 +1274,24 @@ class Reader {
             text = sel.toString()
         }
         const content = range.toString()
-        globalThis.showSelection({ type: 'selection', text, content, lang, value, pos }).then(action => {
+        const selectionProgress = this.view.getProgressOf(index, range)
+        globalThis.showSelection({
+            type: 'selection',
+            text,
+            content,
+            lang,
+            value,
+            pos,
+            ...selectionProgress,
+        }).then(action => {
             switch (action) {
+                case 'reference':
+                    console.log("Reference selected:", this.bookId, text, content, lang, value, pos);
+                    createReference(this.bookId, value, text, success => {
+                        if (success) console.log("Reference stored.");
+                        else console.log("Reference not stored");
+                    });
+                    break;
                 case 'copy': getHTML(range).then(html =>
                     dispatch({ type: 'selection', payload: { action, text, html } }))
                     break
@@ -655,8 +1302,12 @@ class Reader {
                     dispatch({ type: 'selection', payload: { action, text, pos } })
                     break
                 case 'copy-citation':
-                    dispatch({ type: 'selection', payload: { action, text, value,
-                        ...this.view.getProgressOf(index, range) }})
+                    dispatch({
+                        type: 'selection', payload: {
+                            action, text, value,
+                            ...this.view.getProgressOf(index, range)
+                        }
+                    })
                     break
                 case 'highlight':
                     this.#showAnnotation({ index, range, value, pos })
@@ -666,9 +1317,11 @@ class Reader {
                     break
                 case 'speak-from-here':
                     this.view.initTTS().then(() => dispatch({
-                        type: 'selection', payload: { action,
-                        ssml: this.view.tts.from(range),
-                    }}))
+                        type: 'selection', payload: {
+                            action,
+                            ssml: this.view.tts.from(range),
+                        }
+                    }))
                     break
             }
         })
@@ -677,7 +1330,6 @@ class Reader {
     createTocMap() {
         const map = new Map();
         const processTocItem = (item) => {
-            // console.log(`Label: ${item.label}, Href: ${item.href}`);
             const { index } = this.book.resolveHref(item.href);
             if (index !== undefined) {
                 map.set(index, item.label);
@@ -718,7 +1370,7 @@ class Reader {
         dispatch({ type: 'find-results', payload: { query, results } });
         return results;
     }
-    
+
     printRange(doc, range) {
         const iframe = document.createElement('iframe')
         // NOTE: it needs `allow-scripts` to remove the frame after printing

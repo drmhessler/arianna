@@ -10,6 +10,7 @@
 #include <QMimeDatabase>
 #include <QObject>
 #include <QSet>
+#include <QVector>
 #include <memory>
 
 using ResourceMap = QMap<QString, QString>;
@@ -21,6 +22,7 @@ class QXmlStreamReader;
 struct EpubItem {
     QString path;
     QByteArray mimetype;
+    QStringList properties;
 };
 
 struct EpubPageReference {
@@ -51,6 +53,30 @@ struct EpubPageReference {
     QString title;
 };
 
+struct TargetAnchorInfo {
+    QString bookId;
+    QString ref;
+    QString file;
+    QString location;
+    QString previewHtml;
+    QString title;
+    QString type;
+};
+
+struct EpubReference {
+    QString sourceAnchorId;
+    QString targetBookId;
+    QString targetAnchorId;
+    QString targetLocation;
+    QString targetPreviewHtml;
+};
+
+struct ServerReadyEpubOptions {
+    ResourceMap resourceMap;
+    bool includeReferences = false;
+    QVector<EpubReference> references;
+};
+
 struct Collection {
     enum Type {
         Set,
@@ -76,16 +102,18 @@ public:
     {
         return m_items.value(id);
     }
-
     QSharedPointer<QIODevice> ioDevice(const QString &path);
     QByteArray readData(const QString &path);
     QImage image(const QString &id);
+    QImage coverImage();
     QList<Collection> collections() const;
     QStringList metadata(const QStringView &key);
     QStringList items() const
     {
         return m_orderedItems;
     }
+    QString getFileHash() const;
+    QString getContentHash() const;
 
     QStringList manifestItemIds() const
     {
@@ -96,7 +124,15 @@ public:
     const QHash<QString, EpubItem> &manifestItems() const;
 
     QByteArray createServerReadyEpub(const ResourceMap &resourceMap) const;
-
+    QByteArray createServerReadyEpub(const ServerReadyEpubOptions &options) const;
+    QString createAnchor(const QString &cfi);
+    QString createAnchor(const QString &cfi, const QString &anchorType);
+    QString createBookrefAnchor(const QString &cfi, const QString &targetLocation, bool isCrossReference);
+    QString createAnnotationAnchor(const QString &cfi);
+    QVector<TargetAnchorInfo> referenceableTargets();
+    QVector<TargetAnchorInfo> targetAnchors() const;
+    const TargetAnchorInfo *targetAnchorByRef(const QString &ref) const;
+    void extractTargetAnchors();
     const KArchiveDirectory *rootDirectory() const;
 
     QString standardPage(EpubPageReference::StandardType type) const
@@ -120,9 +156,17 @@ private:
     bool parseMetadataPropertyItem(const QDomElement &metadataElemenent, const QDomNodeList &nodeList);
     bool parseManifestItem(const QDomNode &manifestNodes, const QString &currentFolder);
     bool parseSpineItem(const QDomNode &spineNode);
-    bool parseGuideItem(const QDomNode &guideItem);
+    bool parseGuideItem(const QDomNode &guideItem, const QString &currentFolder);
+    void extractNavigationTargetsFromDocument(const QString &itemId, const QString &path, QVector<TargetAnchorInfo> &targets, QSet<QString> &seenLocations);
+    void extractNcxTargetsFromDocument(const QString &itemId, const QString &path, QVector<TargetAnchorInfo> &targets, QSet<QString> &seenLocations);
+    void extractReferenceableTargetsFromDocument(const QString &itemId, const QString &path, QVector<TargetAnchorInfo> &targets, QSet<QString> &seenLocations);
+    void extractTargetAnchorsFromDocument(const QString &itemId, const QString &path);
 
-    const KArchiveFile *file(const QString &path);
+    QString createRangeAnchor(const QString &cfi, const QString &anchorType, const QString &href, const QString &debugLabel);
+    const KArchiveFile *file(const QString &path) const;
+    QString itemIdForPath(const QString &path) const;
+    QImage imageFromItem(const QString &id);
+    QImage coverImageFromDocument(const QString &path);
 
     std::unique_ptr<KZip> m_archive;
     const KArchiveDirectory *m_rootFolder;
@@ -137,5 +181,9 @@ private:
     QHash<EpubPageReference::StandardType, EpubPageReference> m_standardReferences;
     QHash<QString, EpubPageReference> m_otherReferences;
     QString m_filename;
+    QString m_contentFilePath;
     QMimeDatabase m_mimeDatabase;
+    QVector<TargetAnchorInfo> m_targetAnchors;
+    QHash<QString, TargetAnchorInfo> m_targetAnchorIndex;
+    bool m_targetAnchorsExtracted = false;
 };

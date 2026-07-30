@@ -172,6 +172,16 @@ FormCard.FormCardPage {
                 text: i18n("Location:")
                 description: root.metadata.filename
                 visible: description.length > 0
+                trailing: QQC2.ToolButton {
+                    display: QQC2.AbstractButton.IconOnly
+                    icon.name: "document-open-folder"
+                    text: i18nc("@action:button", "Open Containing Folder")
+                    enabled: locationField.description.length > 0
+                    QQC2.ToolTip.text: text
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                    onClicked: Arianna.FileOpener.openContainingFolder(locationField.description)
+                }
             }
 
             FormCard.FormDelegateSeparator {

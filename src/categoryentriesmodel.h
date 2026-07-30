@@ -204,6 +204,13 @@ public:
      * @param filename the filename associated with an entry object.
      */
     Q_INVOKABLE std::optional<BookEntry> bookFromFile(const QString &filename);
+
+    /**
+     * @return an entry object for the given filename, or an empty entry if no
+     * entry exists.
+     * @param filename the filename associated with an entry object.
+     */
+    Q_INVOKABLE BookEntry bookEntryFromFile(const QString &filename);
     /**
      * @return an entry index for the given filename.
      * @param filename the filename associated with an entry object.

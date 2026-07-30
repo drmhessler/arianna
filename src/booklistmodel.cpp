@@ -10,8 +10,10 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QImage>
 #include <QMimeDatabase>
+#include <QSet>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
@@ -66,6 +68,96 @@ static bool refreshEpubIdentifiers(BookEntry &entry)
     return !entry.uniqueIdentifier.isEmpty();
 }
 
+static bool refreshEpubThumbnail(BookEntry &entry)
+{
+    QMimeDatabase db;
+    if (db.mimeTypeForFile(entry.filename).name() != QStringLiteral("application/epub+zip")) {
+        return false;
+    }
+
+    EPubContainer epub(nullptr);
+    if (!epub.openFile(entry.filename)) {
+        return false;
+    }
+
+    const QString thumbnail = entry.saveCover(epub.coverImage());
+    if (thumbnail.isEmpty()) {
+        return false;
+    }
+
+    entry.thumbnail = thumbnail;
+    return true;
+}
+
+static void removeCachedCover(const QString &thumbnail, const QString &replacement = {})
+{
+    if (thumbnail.isEmpty()) {
+        return;
+    }
+
+    const QFileInfo thumbnailInfo(thumbnail);
+    if (!thumbnailInfo.exists()) {
+        return;
+    }
+
+    if (!replacement.isEmpty() && thumbnailInfo.absoluteFilePath() == QFileInfo(replacement).absoluteFilePath()) {
+        return;
+    }
+
+    const QString coversPath = QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)).absoluteFilePath(QStringLiteral("covers"));
+    const QString normalizedCoversPath = QDir(coversPath).absolutePath();
+    if (!thumbnailInfo.absoluteFilePath().startsWith(normalizedCoversPath + QLatin1Char('/'))) {
+        return;
+    }
+
+    QFile::remove(thumbnailInfo.absoluteFilePath());
+}
+
+static void applyEpubMetadata(BookEntry &entry, EPubContainer &epub, bool refreshCover)
+{
+    const auto titles = epub.metadata(QStringLiteral("title"));
+    entry.title = titles.isEmpty() ? QFileInfo(entry.filename).completeBaseName() : titles[0];
+    entry.author = epub.metadata(QStringLiteral("creator"));
+    entry.rights = epub.metadata(QStringLiteral("rights")).join(QStringLiteral(", "));
+    entry.source = epub.metadata(QStringLiteral("source")).join(QStringLiteral(", "));
+    applyEpubIdentifiers(entry, epub);
+    entry.language = epub.metadata(QStringLiteral("language")).join(QStringLiteral(", "));
+    entry.genres = epub.metadata(QStringLiteral("subject"));
+    entry.publisher = epub.metadata(QStringLiteral("publisher")).join(QStringLiteral(", "));
+
+    entry.series.clear();
+    entry.seriesNumbers.clear();
+    entry.seriesVolumes.clear();
+    const auto collections = epub.collections();
+    for (const auto &collection : collections) {
+        entry.series.append(collection.name);
+        entry.seriesNumbers.append(QStringLiteral("0"));
+        entry.seriesVolumes.append(QString::number(collection.position));
+    }
+
+    if (!refreshCover) {
+        return;
+    }
+
+    const QString previousThumbnail = entry.thumbnail;
+    const auto image = epub.coverImage();
+    entry.thumbnail = entry.saveCover(image);
+    removeCachedCover(previousThumbnail, entry.thumbnail);
+}
+
+static bool bookEntryDataMatches(const BookEntry &first, const BookEntry &second)
+{
+    return first.filename == second.filename && first.filetitle == second.filetitle && first.title == second.title && first.genres == second.genres
+        && first.keywords == second.keywords && first.characters == second.characters && first.series == second.series
+        && first.seriesNumbers == second.seriesNumbers && first.seriesVolumes == second.seriesVolumes && first.author == second.author
+        && first.rights == second.rights && first.publisher == second.publisher && first.created == second.created
+        && first.lastOpenedTime == second.lastOpenedTime && first.currentLocation == second.currentLocation && first.currentProgress == second.currentProgress
+        && first.zoomLevel == second.zoomLevel && first.thumbnail == second.thumbnail && first.description == second.description
+        && first.comment == second.comment && first.tags == second.tags && first.locations == second.locations && first.identifier == second.identifier
+        && first.uniqueIdentifier == second.uniqueIdentifier && first.source == second.source && first.language == second.language
+        && first.rating == second.rating;
+}
+
 class BookListModel::Private
 {
 public:
@@ -77,7 +169,9 @@ public:
         , publisherCategoryModel(nullptr)
         , keywordCategoryModel(nullptr)
         , folderCategoryModel(nullptr)
-        , cacheLoaded(false) {};
+        , cacheLoaded(false)
+        , databaseSyncScheduled(false)
+        , skipNextDatabaseSync(false) { };
 
     QList<BookEntry> entries;
 
@@ -90,6 +184,8 @@ public:
     CategoryEntriesModel *folderCategoryModel;
 
     bool cacheLoaded;
+    bool databaseSyncScheduled;
+    bool skipNextDatabaseSync;
 
     void initializeSubModels(BookListModel *q)
     {
@@ -161,14 +257,23 @@ public:
         return true;
     }
 
-    void loadCache(BookListModel *q)
+    qsizetype entryIndexForFile(const QString &fileName) const
     {
-        QList<BookEntry> entries = BookDatabase::self().loadEntries();
-        if (!entries.isEmpty()) {
-            initializeSubModels(q);
+        for (qsizetype i = 0; i < entries.size(); ++i) {
+            if (entries.at(i).filename == fileName) {
+                return i;
+            }
         }
-        int i = 0;
-        for (const BookEntry &entry : std::as_const(entries)) {
+
+        return -1;
+    }
+
+    QList<BookEntry> loadValidEntries(bool refreshMissingMetadata)
+    {
+        QList<BookEntry> validEntries;
+        const QList<BookEntry> cachedEntries = BookDatabase::self().loadEntries();
+        QSet<QString> usedThumbnails;
+        for (const BookEntry &entry : std::as_const(cachedEntries)) {
             /*
              * This might turn out a little slow, but we should avoid having entries
              * that do not exist. If we end up with slowdown issues when loading the
@@ -176,21 +281,101 @@ public:
              */
             if (QFileInfo::exists(entry.filename)) {
                 BookEntry cachedEntry = entry;
-                if (cachedEntry.uniqueIdentifier.isEmpty() && refreshEpubIdentifiers(cachedEntry)) {
+                if (refreshMissingMetadata && cachedEntry.uniqueIdentifier.isEmpty() && refreshEpubIdentifiers(cachedEntry)) {
                     BookDatabase::self().updateEntry(cachedEntry.filename, QStringLiteral("identifier"), cachedEntry.identifier);
                     BookDatabase::self().updateEntry(cachedEntry.filename, QStringLiteral("uniqueIdentifier"), cachedEntry.uniqueIdentifier);
                 }
-                addEntry(q, cachedEntry);
-                if (++i % 100 == 0) {
-                    Q_EMIT q->countChanged();
-                    qApp->processEvents();
+
+                const QString thumbnailPath = cachedEntry.thumbnail.isEmpty() ? QString() : QFileInfo(cachedEntry.thumbnail).absoluteFilePath();
+                const bool thumbnailNeedsRefresh =
+                    cachedEntry.thumbnail.isEmpty() || !QFileInfo::exists(cachedEntry.thumbnail) || usedThumbnails.contains(thumbnailPath);
+                if (refreshMissingMetadata && thumbnailNeedsRefresh && refreshEpubThumbnail(cachedEntry)) {
+                    BookDatabase::self().updateEntry(cachedEntry.filename, QStringLiteral("thumbnail"), cachedEntry.thumbnail);
                 }
+                if (!cachedEntry.thumbnail.isEmpty()) {
+                    usedThumbnails.insert(QFileInfo(cachedEntry.thumbnail).absoluteFilePath());
+                }
+                validEntries.append(cachedEntry);
             } else {
                 BookDatabase::self().removeEntry(entry);
             }
         }
+
+        return validEntries;
+    }
+
+    void loadCache(BookListModel *q)
+    {
+        const QList<BookEntry> validEntries = loadValidEntries(false);
+        if (!validEntries.isEmpty()) {
+            initializeSubModels(q);
+        }
+
+        int i = 0;
+        for (const BookEntry &entry : validEntries) {
+            addEntry(q, entry);
+            if (++i % 100 == 0) {
+                Q_EMIT q->countChanged();
+                qApp->processEvents();
+            }
+        }
+
         cacheLoaded = true;
         Q_EMIT q->cacheLoadedChanged();
+    }
+
+    void syncWithDatabase(BookListModel *q)
+    {
+        const QList<BookEntry> databaseEntries = loadValidEntries(false);
+
+        QHash<QString, BookEntry> databaseEntriesByFile;
+        databaseEntriesByFile.reserve(databaseEntries.size());
+        for (const BookEntry &entry : databaseEntries) {
+            databaseEntriesByFile.insert(entry.filename, entry);
+        }
+
+        bool bookCountChanged = false;
+        for (qsizetype i = entries.size() - 1; i >= 0; --i) {
+            const BookEntry entry = entries.at(i);
+            if (databaseEntriesByFile.contains(entry.filename)) {
+                continue;
+            }
+
+            entries.removeAt(i);
+            Q_EMIT q->entryRemoved(entry);
+            bookCountChanged = true;
+        }
+
+        if (!databaseEntries.isEmpty()) {
+            initializeSubModels(q);
+        }
+
+        for (const BookEntry &databaseEntry : databaseEntries) {
+            const qsizetype existingIndex = entryIndexForFile(databaseEntry.filename);
+            if (existingIndex < 0) {
+                if (addEntry(q, databaseEntry)) {
+                    bookCountChanged = true;
+                }
+                continue;
+            }
+
+            const BookEntry existingEntry = entries.at(existingIndex);
+            if (bookEntryDataMatches(existingEntry, databaseEntry)) {
+                continue;
+            }
+
+            entries.removeAt(existingIndex);
+            Q_EMIT q->entryRemoved(existingEntry);
+            addEntry(q, databaseEntry);
+        }
+
+        if (contentModel) {
+            contentModel->setKnownFiles(q->knownBookFiles());
+        }
+
+        if (bookCountChanged) {
+            Q_EMIT q->countChanged();
+        }
     }
 };
 
@@ -198,6 +383,7 @@ BookListModel::BookListModel(QObject *parent)
     : CategoryEntriesModel(parent)
     , d(std::make_unique<Private>())
 {
+    connect(&BookDatabase::self(), &BookDatabase::databaseChanged, this, &BookListModel::scheduleDatabaseSync);
 }
 
 BookListModel::~BookListModel() = default;
@@ -206,6 +392,28 @@ void BookListModel::componentComplete()
 {
     QTimer::singleShot(0, this, [this]() {
         d->loadCache(this);
+    });
+}
+
+void BookListModel::scheduleDatabaseSync()
+{
+    if (!d->cacheLoaded || d->databaseSyncScheduled) {
+        return;
+    }
+
+    if (d->skipNextDatabaseSync) {
+        d->skipNextDatabaseSync = false;
+        return;
+    }
+
+    d->databaseSyncScheduled = true;
+    QTimer::singleShot(250, this, [this]() {
+        d->databaseSyncScheduled = false;
+        if (!d->cacheLoaded) {
+            return;
+        }
+
+        d->syncWithDatabase(this);
     });
 }
 
@@ -301,7 +509,7 @@ void BookListModel::contentModelItemsInserted(QModelIndex index, int first, int 
             entry.genres = epub.metadata(QStringLiteral("subject"));
             entry.publisher = epub.metadata(QStringLiteral("publisher")).join(QStringLiteral(", "));
 
-            auto image = epub.image(epub.metadata(QStringLiteral("cover")).join(QChar()));
+            auto image = epub.coverImage();
             entry.thumbnail = entry.saveCover(image);
 
             const auto collections = epub.collections();
@@ -373,6 +581,7 @@ void BookListModel::setBookData(const QString &fileName, const QString &property
 {
     for (BookEntry &entry : d->entries) {
         if (entry.filename == fileName) {
+            d->skipNextDatabaseSync = true;
             if (property == QStringLiteral("currentLocation")) {
                 entry.currentLocation = value;
                 BookDatabase::self().updateEntry(entry.filename, property, {value});
@@ -402,6 +611,56 @@ void BookListModel::setBookData(const QString &fileName, const QString &property
             break;
         }
     }
+}
+
+BookEntry BookListModel::refreshBookFromFile(const QString &fileName, bool refreshCover)
+{
+    const QUrl fileUrl(fileName);
+    const QString localFileName = fileUrl.isLocalFile() ? fileUrl.toLocalFile() : fileName;
+    const QFileInfo fileInfo(localFileName);
+    if (!fileInfo.exists() || !fileInfo.isFile()) {
+        return BookEntry();
+    }
+
+    qsizetype entryIndex = -1;
+    const QString absoluteFileName = fileInfo.absoluteFilePath();
+    for (qsizetype i = 0; i < d->entries.size(); ++i) {
+        if (QFileInfo(d->entries.at(i).filename).absoluteFilePath() == absoluteFileName) {
+            entryIndex = i;
+            break;
+        }
+    }
+
+    if (entryIndex < 0) {
+        return BookEntry();
+    }
+
+    QMimeDatabase db;
+    if (db.mimeTypeForFile(fileInfo).name() != QStringLiteral("application/epub+zip")) {
+        return BookEntry();
+    }
+
+    EPubContainer epub(nullptr);
+    if (!epub.openFile(absoluteFileName)) {
+        return BookEntry();
+    }
+
+    const BookEntry oldEntry = d->entries.at(entryIndex);
+    BookEntry refreshedEntry = oldEntry;
+    refreshedEntry.filetitle = QFileInfo(refreshedEntry.filename).fileName();
+    applyEpubMetadata(refreshedEntry, epub, refreshCover);
+
+    d->entries.removeAt(entryIndex);
+    Q_EMIT entryRemoved(oldEntry);
+
+    d->initializeSubModels(this);
+    d->addEntry(this, refreshedEntry);
+    d->skipNextDatabaseSync = true;
+    BookDatabase::self().updateEntry(refreshedEntry);
+
+    qCDebug(ARIANNA_LOG) << "Refreshed book metadata from edited EPUB" << refreshedEntry.filename;
+
+    return refreshedEntry;
 }
 
 void BookListModel::removeBook(const QString &fileName, bool deleteFile)

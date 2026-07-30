@@ -246,7 +246,19 @@ class View {
     async load(src, afterLoad, beforeRender) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
         return new Promise(resolve => {
-            this.#iframe.addEventListener('load', () => {
+            let done = false
+            let poll = null
+            let fallback = null
+            const isTargetDocumentReady = reason => {
+                const doc = this.document
+                return doc?.body && (reason === 'load' || doc.URL === src) && doc.readyState !== 'loading'
+            }
+            const finish = reason => {
+                if (done || !isTargetDocumentReady(reason)) return
+                done = true
+                clearInterval(poll)
+                clearTimeout(fallback)
+                this.#iframe.removeEventListener('load', onLoad)
                 const doc = this.document
                 afterLoad?.(doc)
 
@@ -271,7 +283,13 @@ class View {
                 doc.fonts.ready.then(() => this.expand())
 
                 resolve()
-            }, { once: true })
+            }
+            const onLoad = () => finish('load')
+            this.#iframe.addEventListener('load', onLoad)
+            fallback = setTimeout(() => {
+                poll = setInterval(() => finish('dom-ready'), 50)
+                finish('dom-ready')
+            }, 500)
             this.#iframe.src = src
         })
     }
@@ -465,9 +483,6 @@ export class Paginator extends HTMLElement {
         if (readerBackground) {
             this.#setBackgroundStyle(this.#background.style, readerBackground)
             this.#background.style.setProperty('filter', readerBackground.filter)
-            if (!doc) return
-            this.#setBackgroundStyle(doc.documentElement.style, readerBackground)
-            this.#setBackgroundStyle(doc.body.style, readerBackground)
             return
         }
 

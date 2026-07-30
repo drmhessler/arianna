@@ -3,7 +3,6 @@
 
 import QtQuick
 import QtQuick.Controls as QQC2
-import QtWebEngine
 import QtWebChannel
 import QtQuick.Layouts
 import org.kde.kitemmodels as KItemModels
@@ -18,10 +17,15 @@ Kirigami.ScrollablePage {
     property CategoryEntriesModel bookListModel
     property var addBookAction
     property string pageTitle: i18n("Library")
+    property string searchText: applicationWindow().librarySearchText
     property bool showBookCount: root.bookListModel === applicationWindow().bookListModel
+    readonly property bool searchActive: searchText.trim().length > 0
     readonly property int totalBookCount: applicationWindow().bookListModel ? applicationWindow().bookListModel.count : 0
 
     title: showBookCount ? i18nc("@title:window, %1 is the page title and %2 is the number of books", "%1 (%2)", pageTitle, totalBookCount) : pageTitle
+
+    onSearchTextChanged: sortProxy.setFilterFixedString(searchText.trim())
+    onBookListModelChanged: scheduleViewRefresh()
 
     function canEditBook(fileName) {
         return Config.editorPath.trim().length > 0 && fileName && fileName.length > 0;
@@ -32,7 +36,7 @@ Kirigami.ScrollablePage {
             return;
         }
 
-        EditorProcess.start(Config.editorPath.trim(), [fileName]);
+        ExternalProcess.start(Config.editorPath.trim(), [fileName]);
     }
 
     function confirmRemoveBook(fileName) {
@@ -43,13 +47,25 @@ Kirigami.ScrollablePage {
         removeBookDialog.openForBook(fileName);
     }
 
+    function refreshBook(fileName) {
+        if (!fileName || fileName.length === 0 || !applicationWindow().bookListModel) {
+            return;
+        }
+
+        applicationWindow().bookListModel.refreshBookFromFile(fileName);
+    }
+
     function escapeHtml(text) {
-        return String(text)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#39;");
+        return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    function refreshView() {
+        sortProxy.invalidate();
+        sortProxy.setFilterFixedString(root.searchText.trim());
+    }
+
+    function scheduleViewRefresh() {
+        Qt.callLater(refreshView);
     }
 
     actions: [
@@ -101,7 +117,43 @@ Kirigami.ScrollablePage {
         sourceModel: root.bookListModel
         sortRoleName: "lastOpenedTime"
         sortOrder: Qt.DescendingOrder
+        filterRole: CategoryEntriesModel.TitleRole
+        filterCaseSensitivity: Qt.CaseInsensitive
         dynamicSortFilter: true
+
+        Component.onCompleted: setFilterFixedString(root.searchText.trim())
+    }
+
+    Connections {
+        target: root.bookListModel
+
+        function onCountChanged() {
+            root.scheduleViewRefresh();
+        }
+
+        function onDataChanged() {
+            root.scheduleViewRefresh();
+        }
+
+        function onRowsInserted() {
+            root.scheduleViewRefresh();
+        }
+
+        function onRowsRemoved() {
+            root.scheduleViewRefresh();
+        }
+
+        function onModelReset() {
+            root.scheduleViewRefresh();
+        }
+
+        function onEntryDataUpdated() {
+            root.scheduleViewRefresh();
+        }
+
+        function onEntryRemoved() {
+            root.scheduleViewRefresh();
+        }
     }
 
     QQC2.Dialog {
@@ -181,7 +233,7 @@ Kirigami.ScrollablePage {
             if (Kirigami.Settings.isMobile) {
                 return cellWidth + Kirigami.Units.gridUnit * 2 + Kirigami.Units.largeSpacing;
             } else {
-                return 170 + Kirigami.Units.gridUnit * 2 + Kirigami.Units.largeSpacing
+                return 170 + Kirigami.Units.gridUnit * 2 + Kirigami.Units.largeSpacing;
             }
         }
         currentIndex: -1
@@ -221,7 +273,7 @@ Kirigami.ScrollablePage {
             onClicked: if (categoryEntriesModel) {
                 Navigation.openLibrary(title, categoryEntriesModel, false);
             } else {
-                Navigation.openBook(filename, locations, currentLocation, entry);
+                Navigation.openBook(filename, locations, currentLocation, entry, false);
             }
 
             ColumnLayout {
@@ -234,6 +286,18 @@ Kirigami.ScrollablePage {
                 z: 1
                 spacing: Kirigami.Units.smallSpacing
                 visible: !Kirigami.Settings.isMobile && bookDelegate.hovered && bookDelegate.categoryEntriesModel === ""
+
+                QQC2.ToolButton {
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 2
+                    Layout.preferredHeight: Kirigami.Units.gridUnit * 2
+                    display: QQC2.AbstractButton.IconOnly
+                    icon.name: "view-refresh"
+                    text: i18nc("@action:button", "Refresh Book Metadata")
+                    QQC2.ToolTip.text: text
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                    onClicked: root.refreshBook(bookDelegate.filename)
+                }
 
                 QQC2.ToolButton {
                     Layout.preferredWidth: Kirigami.Units.gridUnit * 2
@@ -294,10 +358,17 @@ Kirigami.ScrollablePage {
             property bool isBook: false
 
             QQC2.Action {
+                icon.name: 'view-refresh'
+                text: i18nc("@action:inmenu", "Refresh Book Metadata")
+                enabled: menu.isBook
+                onTriggered: root.refreshBook(menu.filename)
+            }
+
+            QQC2.Action {
                 icon.name: 'documentinfo-symbolic'
                 text: i18nc("@action:inmenu", "Book Details")
                 onTriggered: applicationWindow().pageStack.pushDialogLayer(Qt.resolvedUrl("./BookDetailsPage.qml"), {
-                    metadata: menu.entry,
+                    metadata: menu.entry
                 })
             }
 
@@ -321,8 +392,8 @@ Kirigami.ScrollablePage {
             width: parent.width - (Kirigami.Units.largeSpacing * 4)
             visible: contentDirectoryView.count === 0
             icon.name: "application-epub+zip"
-            text: i18nc("@info placeholder", "Add some books")
-            helpfulAction: addBookActionProxy
+            text: root.searchActive ? i18nc("@info placeholder", "No books found") : i18nc("@info placeholder", "Add some books")
+            helpfulAction: root.searchActive ? null : addBookActionProxy
         }
     }
 }

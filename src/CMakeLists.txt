@@ -54,6 +54,9 @@ qt_target_qml_sources(arianna_static
 
         qml/jszip.min.js
         qml/utils.js
+
+        qml/icons/bookmark-gold.svg
+        qml/icons/book.svg
 )
 
 ecm_qt_declare_logging_category(arianna_static
@@ -72,10 +75,19 @@ target_sources(arianna_static PRIVATE
     format.h
     bookdatabase.cpp
     bookdatabase.h
+    bookrevision.h
+    booktruthstore.cpp
+    booktruthstore.h
+    annotationstore.cpp
+    annotationstore.h
+    referencestore.cpp
+    referencestore.h
     bookserver.cpp
     bookserver.h
-    editorprocess.cpp
-    editorprocess.h
+    externalprocess.cpp
+    externalprocess.h
+    fileopener.cpp
+    fileopener.h
     translator.cpp
     translator.h
     categoryentriesmodel.cpp
@@ -86,6 +98,8 @@ target_sources(arianna_static PRIVATE
     booklistmodel.h
     epubcontainer.cpp
     epubcontainer.h
+    epubschemehandler.cpp
+    epubschemehandler.h
     tableofcontentmodel.cpp
     tableofcontentmodel.h
     navigation.cpp
@@ -129,6 +143,7 @@ target_link_libraries(arianna_static PUBLIC
     KF6::Crash
     KF6::ColorScheme
     KF6::I18nQml
+    KF6::KIOGui
 )
 
 target_link_libraries(arianna_static PUBLIC Qt::WebEngineQuick)

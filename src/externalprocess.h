@@ -11,14 +11,14 @@
 #include <QTimer>
 #include <qqmlintegration.h>
 
-class EditorProcess : public QObject
+class ExternalProcess : public QObject
 {
     Q_OBJECT
     QML_ELEMENT
     QML_SINGLETON
 
 public:
-    explicit EditorProcess(QObject *parent = nullptr);
+    explicit ExternalProcess(QObject *parent = nullptr);
 
     Q_INVOKABLE void start(const QString &program, const QStringList &arguments);
     Q_INVOKABLE bool startDetached(const QString &program, const QStringList &arguments = {});

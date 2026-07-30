@@ -153,10 +153,15 @@ QVariant CategoryEntriesModel::data(const QModelIndex &index, int role) const
 
             QFile file(entry.thumbnail);
             EPubContainer epub(nullptr);
-            epub.openFile(entry.filename);
-            auto image = epub.image(epub.metadata(QStringLiteral("cover")).join(QChar()));
-            entry.saveCover(image, entry.thumbnail);
-            return entry.thumbnail;
+            if (!epub.openFile(entry.filename)) {
+                return {};
+            }
+            const auto image = epub.coverImage();
+            const QString savedThumbnail = entry.saveCover(image, entry.thumbnail);
+            if (savedThumbnail.isEmpty()) {
+                return {};
+            }
+            return savedThumbnail;
         }
         case DescriptionRole:
             return entry.description;
@@ -386,6 +391,11 @@ std::optional<BookEntry> CategoryEntriesModel::bookFromFile(const QString &filen
         }
     }
     return book;
+}
+
+BookEntry CategoryEntriesModel::bookEntryFromFile(const QString &filename)
+{
+    return bookFromFile(filename).value_or(BookEntry{});
 }
 
 void CategoryEntriesModel::entryDataChanged(const BookEntry &entry)

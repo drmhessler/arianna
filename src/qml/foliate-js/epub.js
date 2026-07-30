@@ -129,6 +129,14 @@ const replaceSeries = async (str, regex, f) => {
     return str.replace(regex, () => results.shift())
 }
 
+const mapConcurrent = async (items, limit, f) => {
+    const queue = Array.from(items)
+    const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+        while (queue.length) await f(queue.shift())
+    })
+    await Promise.all(workers)
+}
+
 const regexEscape = str => str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')
 
 const tidy = obj => {
@@ -683,7 +691,7 @@ class Resources {
     getItemByProperty(prop) {
         return this.manifest.find(item => item.properties?.includes(prop))
     }
-    resolveCFI(cfi) {
+    resolveCFI(cfi, filter) {
         const parts = CFI.parse(cfi)
         const top = (parts.parent ?? parts).shift()
         let $itemref = CFI.toElement(this.opf, top)
@@ -696,13 +704,14 @@ class Resources {
         }
         const idref = $itemref?.getAttribute('idref')
         const index = this.spine.findIndex(item => item.idref === idref)
-        const anchor = doc => CFI.toRange(doc, parts)
+        const anchor = doc => CFI.toRange(doc, parts, filter)
         return { index, anchor }
     }
 }
 
 class Loader {
     #cache = new Map()
+    #pending = new Map()
     #children = new Map()
     #refCount = new Map()
     allowScript = true
@@ -737,7 +746,6 @@ class Loader {
         const childList = this.#children.get(parent)
         if (!childList?.includes(href)) {
             this.#refCount.set(href, this.#refCount.get(href) + 1)
-            //console.log(`referencing ${href}, now ${this.#refCount.get(href)}`)
             if (childList) childList.push(href)
             else this.#children.set(parent, [href])
         }
@@ -746,9 +754,7 @@ class Loader {
     unref(href) {
         if (!this.#refCount.has(href)) return
         const count = this.#refCount.get(href) - 1
-        //console.log(`unreferencing ${href}, now ${count}`)
         if (count < 1) {
-            //console.log(`unloading ${href}`)
             URL.revokeObjectURL(this.#cache.get(href))
             this.#cache.delete(href)
             this.#refCount.delete(href)
@@ -768,15 +774,24 @@ class Loader {
 
         const parent = parents.at(-1)
         if (this.#cache.has(href)) return this.ref(href, parent)
+        if (this.#pending.has(href)) {
+            const url = await this.#pending.get(href)
+            return url ? this.ref(href, parent) : url
+        }
 
         const shouldReplace =
             (isScript || [MIME.XHTML, MIME.HTML, MIME.CSS, MIME.SVG].includes(mediaType))
             // prevent circular references
             && parents.every(p => p !== href)
-        if (shouldReplace) return this.loadReplaced(item, parents)
-        // NOTE: this can be replaced with `Promise.try()`
-        const tryLoadBlob = Promise.resolve().then(() => this.loadBlob(href))
-        return this.createURL(href, tryLoadBlob, mediaType, parent)
+        const promise = shouldReplace
+            ? this.loadReplaced(item, parents)
+            : this.createURL(href, Promise.resolve().then(() => this.loadBlob(href)), mediaType, parent)
+        this.#pending.set(href, promise)
+        try {
+            return await promise
+        } finally {
+            this.#pending.delete(href)
+        }
     }
     async loadHref(href, base, parents = []) {
         if (isExternal(href)) return href
@@ -835,20 +850,21 @@ class Loader {
             // TODO: srcset?
             const replace = async (el, attr) => el.setAttribute(attr,
                 await this.loadHref(el.getAttribute(attr), href, parents))
-            for (const el of doc.querySelectorAll('link[href]')) await replace(el, 'href')
-            for (const el of doc.querySelectorAll('[src]')) await replace(el, 'src')
-            for (const el of doc.querySelectorAll('[poster]')) await replace(el, 'poster')
-            for (const el of doc.querySelectorAll('object[data]')) await replace(el, 'data')
-            for (const el of doc.querySelectorAll('[*|href]:not([href])'))
+            await mapConcurrent(doc.querySelectorAll('link[href]'), 8, el => replace(el, 'href'))
+            await mapConcurrent(doc.querySelectorAll('[src]'), 8, el => replace(el, 'src'))
+            await mapConcurrent(doc.querySelectorAll('[poster]'), 8, el => replace(el, 'poster'))
+            await mapConcurrent(doc.querySelectorAll('object[data]'), 8, el => replace(el, 'data'))
+            await mapConcurrent(doc.querySelectorAll('[*|href]:not([href])'), 8, async el =>
                 el.setAttributeNS(NS.XLINK, 'href', await this.loadHref(
-                    el.getAttributeNS(NS.XLINK, 'href'), href, parents))
+                    el.getAttributeNS(NS.XLINK, 'href'), href, parents)))
             // replace inline styles
-            for (const el of doc.querySelectorAll('style'))
+            await mapConcurrent(doc.querySelectorAll('style'), 4, async el => {
                 if (el.textContent) el.textContent =
                     await this.replaceCSS(el.textContent, href, parents)
-            for (const el of doc.querySelectorAll('[style]'))
+            })
+            await mapConcurrent(doc.querySelectorAll('[style]'), 8, async el =>
                 el.setAttribute('style',
-                    await this.replaceCSS(el.getAttribute('style'), href, parents))
+                    await this.replaceCSS(el.getAttribute('style'), href, parents)))
             // TODO: replace inline scripts? probably not worth the trouble
             const result = new XMLSerializer().serializeToString(doc)
             return this.createURL(href, result, item.mediaType, parent)
@@ -1033,8 +1049,8 @@ ${doc.querySelector('parsererror').innerText}`)
     getMediaOverlay() {
         return new MediaOverlay(this, this.#loadXML.bind(this))
     }
-    resolveCFI(cfi) {
-        return this.resources.resolveCFI(cfi)
+    resolveCFI(cfi, filter) {
+        return this.resources.resolveCFI(cfi, filter)
     }
     resolveHref(href) {
         const [path, hash] = href.split('#')

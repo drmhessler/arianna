@@ -145,6 +145,12 @@ msgstr "Sprache:"
 msgid "Location:"
 msgstr "Standort:"
 
+#: qml/BookDetailsPage.qml:178
+#, kde-format
+msgctxt "@action:button"
+msgid "Open Containing Folder"
+msgstr "Enthaltenden Ordner öffnen"
+
 #: qml/BookDetailsPage.qml:122
 #, kde-format
 msgid "Unique identifier:"
@@ -187,6 +193,11 @@ msgctxt "@action:intoolbar"
 msgid "Search"
 msgstr "Suchen"
 
+#: qml/EpubViewerPage.qml:376 qml/EpubViewerPage.qml:509
+#, kde-format
+msgid "Remarks"
+msgstr "Anmerkungen"
+
 #: qml/EpubViewerPage.qml:132
 #, kde-format
 msgid "Book Details"
@@ -212,6 +223,11 @@ msgstr "Bitte wählen Sie eine Datei"
 msgctxt "Name filter for EPUB files"
 msgid "eBook files (*.epub *.cb* *.fb2 *.fb2zip)"
 msgstr "eBook-Dateien (*.epub *.cb* *.fb2 *.fb2zip)"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Highlight"
+msgstr "Markieren"
 
 #: qml/EpubViewerPage.qml:229
 #, kde-format
@@ -269,6 +285,21 @@ msgstr "Mit Google Suchen"
 msgid "Edit at Text"
 msgstr "Editieren am Text"
 
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Edit Annotation"
+msgstr "Anmerkung bearbeiten"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Select Text"
+msgstr "Text auswählen"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Delete Annotation"
+msgstr "Anmerkung löschen"
+
 #: qml/EpubViewerPage.qml:359
 #, kde-format
 msgid "Translate"
@@ -278,6 +309,17 @@ msgstr "Übersetzen"
 msgctxt "@title:window"
 msgid "Translation"
 msgstr "Übersetzung"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgctxt "@title:dialog"
+msgid "Annotation"
+msgstr "Anmerkung"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Add Note…"
+msgstr "Notiz hinzufügen …"
 
 #: qml/EpubViewerPage.qml:268
 #, kde-format
@@ -423,6 +465,12 @@ msgstr "Letzter Zugriff"
 #: qml/LibraryPage.qml:98
 #, kde-format
 msgctxt "@action:button"
+msgid "Refresh Book Metadata"
+msgstr "Buchmetadaten auffrischen"
+
+#: qml/LibraryPage.qml:98
+#, kde-format
+msgctxt "@action:button"
 msgid "Book Details"
 msgstr "Buchdetails"
 
@@ -437,6 +485,12 @@ msgstr "Buch bearbeiten"
 msgctxt "@action:button"
 msgid "Remove from Library"
 msgstr "Aus Bibliothek entfernen"
+
+#: qml/LibraryPage.qml:152
+#, kde-format
+msgctxt "@action:inmenu"
+msgid "Refresh Book Metadata"
+msgstr "Buchmetadaten auffrischen"
 
 #: qml/LibraryPage.qml:152
 #, kde-format
@@ -699,6 +753,8 @@ msgctxt "@info:title"
 msgid "Table of Contents"
 msgstr "Inhaltsverzeichnis"
 
+
+
 #~ msgid "Book details"
 #~ msgstr "Buchdetails"
 
@@ -710,3 +766,171 @@ msgstr "Inhaltsverzeichnis"
 
 #~ msgid "Mastodon client"
 #~ msgstr "Mastodon-Client"
+
+msgid "Create Reference"
+msgstr "Verweis erstellen"
+
+#: qml/EpubViewerPage.qml:270 qml/EpubViewerPage.qml:486
+#, kde-format
+msgid "References"
+msgstr "Referenzen"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "AI Discussion"
+msgstr "KI-Diskussion"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "No prompt available"
+msgstr "Kein Prompt verfügbar"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "No selected text available"
+msgstr "Kein ausgewählter Text verfügbar"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Question prompt:"
+msgstr "Frageprompt:"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Enter a question or task for the AI discussion"
+msgstr "Frage oder Aufgabe für die KI-Diskussion eingeben"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Copy Prompt"
+msgstr "Prompt kopieren"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Unknown"
+msgstr "Unbekannt"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "You are a careful discussion partner for literary, philosophical, and factual texts."
+msgstr "Du bist ein sorgfältiger Diskussionspartner für literarische, philosophische und sachliche Texte."
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Context:"
+msgstr "Kontext:"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Book: %1"
+msgstr "Buch: %1"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Author: %1"
+msgstr "Autor: %1"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Location: %1"
+msgstr "Fundstelle: %1"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Selection language: %1"
+msgstr "Sprache der Auswahl: %1"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Table of contents entry: %1"
+msgstr "Eintrag im Inhaltsverzeichnis: %1"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Selected text:"
+msgstr "Ausgewählter Text:"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Selected text from %1 by %2:"
+msgstr "Ausgewählter Text aus %1 von %2:"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Selected text from %1:"
+msgstr "Ausgewählter Text aus %1:"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Selected text by %1:"
+msgstr "Ausgewählter Text von %1:"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "Task:"
+msgstr "Aufgabe:"
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "- Discuss the central claim of the passage."
+msgstr "- Diskutiere die zentrale Aussage der Passage."
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "- Explain important terms, allusions, or assumptions."
+msgstr "- Erkläre wichtige Begriffe, Anspielungen oder Annahmen."
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "- Ask critical questions that help deepen the reading."
+msgstr "- Stelle kritische Fragen, die das Verständnis vertiefen."
+
+#: qml/EpubViewerPage.qml
+#, kde-format
+msgid "- Mention possible cross-references to similar passages when useful."
+msgstr "- Nenne mögliche Querverweise zu ähnlichen Passagen, wenn es hilfreich ist."
+
+#: qml/SettingsPage.qml
+#, kde-format
+msgid "EPUB delivery"
+msgstr "EPUB-Auslieferung"
+
+#: qml/SettingsPage.qml
+#, kde-format
+msgid "Resource mode"
+msgstr "Ressourcenmodus"
+
+#: qml/SettingsPage.qml
+#, kde-format
+msgid "Automatic"
+msgstr "Automatisch"
+
+#: qml/SettingsPage.qml
+#, kde-format
+msgid "Include resources in EPUB"
+msgstr "Ressourcen ins EPUB einbetten"
+
+#: qml/SettingsPage.qml
+#, kde-format
+msgid "Serve resources from book server"
+msgstr "Ressourcen vom BookServer ausliefern"
+
+#: qml/SettingsPage.qml
+#, kde-format
+msgid "Reference mode"
+msgstr "Referenzmodus"
+
+#: qml/SettingsPage.qml
+#, kde-format
+msgid "Reader handles references"
+msgstr "Reader verwaltet Referenzen"
+
+#: qml/SettingsPage.qml
+#, kde-format
+msgid "Include references in EPUB"
+msgstr "Referenzen ins EPUB einbetten"
+
+#: qml/SettingsPage.qml
+#, kde-format
+msgid "Disable references"
+msgstr "Referenzen deaktivieren"

@@ -295,6 +295,46 @@ FormCard.FormCardPage {
     }
 
     FormCard.FormHeader {
+        title: i18n("EPUB delivery")
+    }
+
+    FormCard.FormCard {
+        FormCard.FormComboBoxDelegate {
+            text: i18n("Resource mode")
+            textRole: "display"
+            valueRole: "value"
+            model: [
+                { display: i18n("Automatic"), value: "auto" },
+                { display: i18n("Include resources in EPUB"), value: "include" },
+                { display: i18n("Serve resources from book server"), value: "outsource" }
+            ]
+            currentIndex: root.deliveryModeIndex(model, Config.bookResourceMode, "auto")
+            onActivated: index => {
+                Config.bookResourceMode = model[index].value;
+                Config.save();
+            }
+        }
+
+        FormCard.FormDelegateSeparator {}
+
+        FormCard.FormComboBoxDelegate {
+            text: i18n("Reference mode")
+            textRole: "display"
+            valueRole: "value"
+            model: [
+                { display: i18n("Reader handles references"), value: "reader" },
+                { display: i18n("Include references in EPUB"), value: "include" },
+                { display: i18n("Disable references"), value: "none" }
+            ]
+            currentIndex: root.deliveryModeIndex(model, Config.bookReferencingMode, "reader")
+            onActivated: index => {
+                Config.bookReferencingMode = model[index].value;
+                Config.save();
+            }
+        }
+    }
+
+    FormCard.FormHeader {
         title: i18n("Editor")
     }
 
@@ -382,5 +422,19 @@ FormCard.FormCardPage {
             return decodeURIComponent(value.replace("file://", ""));
         }
         return value;
+    }
+
+    function deliveryModeIndex(model, value, fallbackValue) {
+        for (let i = 0; i < model.length; ++i) {
+            if (model[i].value === value) {
+                return i;
+            }
+        }
+        for (let i = 0; i < model.length; ++i) {
+            if (model[i].value === fallbackValue) {
+                return i;
+            }
+        }
+        return 0;
     }
 }

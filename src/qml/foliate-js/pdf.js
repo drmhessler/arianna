@@ -1,18 +1,42 @@
 const pdfjsPath = path => new URL(`vendor/pdfjs/${path}`, import.meta.url).toString()
 
-import './vendor/pdfjs/pdf.mjs'
-const pdfjsLib = globalThis.pdfjsLib
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsPath('pdf.worker.mjs')
+const loadScript = src => new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = src
+    script.onload = resolve
+    script.onerror = reject
+    document.head.append(script)
+})
+
+const loadPdfjs = async () => {
+    if (!globalThis.pdfjsLib) {
+        await loadScript(pdfjsPath('pdf.js'))
+    }
+
+    const pdfjsLib = globalThis.pdfjsLib
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsPath('pdf.worker.js')
+    return pdfjsLib
+}
 
 const fetchText = async url => await (await fetch(url)).text()
 
 // https://github.com/mozilla/pdf.js/blob/642b9a5ae67ef642b9a8808fd9efd447e8c350e2/web/text_layer_builder.css
-const textLayerBuilderCSS = await fetchText(pdfjsPath('text_layer_builder.css'))
+let textLayerBuilderCSS = null
 
 // https://github.com/mozilla/pdf.js/blob/642b9a5ae67ef642b9a8808fd9efd447e8c350e2/web/annotation_layer_builder.css
-const annotationLayerBuilderCSS = await fetchText(pdfjsPath('annotation_layer_builder.css'))
+let annotationLayerBuilderCSS = null
+
+const loadPdfCss = async () => {
+    if (!textLayerBuilderCSS) {
+        textLayerBuilderCSS = await fetchText(pdfjsPath('text_layer_builder.css'))
+    }
+    if (!annotationLayerBuilderCSS) {
+        annotationLayerBuilderCSS = await fetchText(pdfjsPath('annotation_layer_builder.css'))
+    }
+}
 
 const render = async (page, doc, zoom) => {
+    const pdfjsLib = await loadPdfjs()
     const scale = zoom * devicePixelRatio
     doc.documentElement.style.transform = `scale(${1 / devicePixelRatio})`
     doc.documentElement.style.transformOrigin = 'top left'
@@ -77,6 +101,7 @@ const renderPage = async (page, getImageBlob) => {
         await page.render({ canvasContext, viewport }).promise
         return new Promise(resolve => canvas.toBlob(resolve))
     }
+    await loadPdfCss()
     const src = URL.createObjectURL(new Blob([`
         <!DOCTYPE html>
         <html lang="en">
@@ -105,6 +130,7 @@ const makeTOCItem = item => ({
 })
 
 export const makePDF = async file => {
+    const pdfjsLib = await loadPdfjs()
     const transport = new pdfjsLib.PDFDataRangeTransport(file.size, [])
     transport.requestDataRange = (begin, end) => {
         file.slice(begin, end).arrayBuffer().then(chunk => {

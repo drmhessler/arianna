@@ -1,7 +1,7 @@
 import './view.js'
 import { createTOCView } from './ui/tree.js'
 import { createMenu } from './ui/menu.js'
-import { Overlayer } from './overlayer.js'
+
 
 const getCSS = ({ spacing, justify, hyphenate }) => `
     @namespace epub "http://www.idpf.org/2007/ops";
@@ -156,6 +156,7 @@ class Reader {
         // load and show highlights embedded in the file by Calibre
         const bookmarks = await book.getCalibreBookmarks?.()
         if (bookmarks) {
+            import { Overlayer } from './overlayer.js'
             const { fromCalibreHighlight } = await import('./epubcfi.js')
             for (const obj of bookmarks) {
                 if (obj.type === 'highlight') {

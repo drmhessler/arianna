@@ -19,6 +19,15 @@ export class Overlayer {
         if (typeof range === 'function') range = range(this.#svg.getRootNode())
         const rects = range.getClientRects()
         const element = draw(rects, options)
+        // element.setAttribute("pointer-events", "all");
+        if (options?.tooltip) {
+            const title = document.createElementNS(
+                "http://www.w3.org/2000/svg",
+                "title"
+            );
+            title.textContent = options.tooltip;
+            element.prepend(title);
+        }
         this.#svg.append(element)
         this.#map.set(key, { range, draw, options, element, rects })
     }

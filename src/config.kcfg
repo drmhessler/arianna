@@ -115,4 +115,14 @@ SPDX-License-Identifier: CC0-1.0
       <default></default>
     </entry>
   </group>
+  <group name="BookDelivery">
+    <entry name="bookResourceMode" type="String">
+      <label>EPUB resource delivery mode</label>
+      <default>auto</default>
+    </entry>
+    <entry name="bookReferencingMode" type="String">
+      <label>EPUB reference delivery mode</label>
+      <default>reader</default>
+    </entry>
+  </group>
 </kcfg>

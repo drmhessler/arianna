@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: LGPL-2.1-only OR LGPL-3.0-only OR LicenseRef-KDE-Accepted-LGPL
 
-#include "editorprocess.h"
+#include "externalprocess.h"
 
 #include <QFile>
 #include <QFileInfo>
 #include <QLoggingCategory>
 
-EditorProcess::EditorProcess(QObject *parent)
+ExternalProcess::ExternalProcess(QObject *parent)
     : QObject(parent)
     , process(new QProcess(this))
     , fileWatcher(new QFileSystemWatcher(this))
@@ -15,12 +15,12 @@ EditorProcess::EditorProcess(QObject *parent)
     editedFileChangedTimer->setSingleShot(true);
     editedFileChangedTimer->setInterval(500);
 
-    connect(process, &QProcess::started, this, &EditorProcess::handleStarted);
-    connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &EditorProcess::handleFinished);
-    connect(process, &QProcess::errorOccurred, this, &EditorProcess::handleErrorOccurred);
-    connect(process, &QProcess::readyReadStandardOutput, this, &EditorProcess::handleReadyRead);
-    connect(fileWatcher, &QFileSystemWatcher::fileChanged, this, &EditorProcess::handleEditedFileChanged);
-    connect(fileWatcher, &QFileSystemWatcher::directoryChanged, this, &EditorProcess::handleEditedDirectoryChanged);
+    connect(process, &QProcess::started, this, &ExternalProcess::handleStarted);
+    connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &ExternalProcess::handleFinished);
+    connect(process, &QProcess::errorOccurred, this, &ExternalProcess::handleErrorOccurred);
+    connect(process, &QProcess::readyReadStandardOutput, this, &ExternalProcess::handleReadyRead);
+    connect(fileWatcher, &QFileSystemWatcher::fileChanged, this, &ExternalProcess::handleEditedFileChanged);
+    connect(fileWatcher, &QFileSystemWatcher::directoryChanged, this, &ExternalProcess::handleEditedDirectoryChanged);
     connect(editedFileChangedTimer, &QTimer::timeout, this, [this] {
         const QString file = pendingEditedFile;
         pendingEditedFile.clear();
@@ -31,7 +31,7 @@ EditorProcess::EditorProcess(QObject *parent)
     });
 }
 
-void EditorProcess::start(const QString &program, const QStringList &arguments)
+void ExternalProcess::start(const QString &program, const QStringList &arguments)
 {
     if (arguments.isEmpty()) {
         return;
@@ -42,7 +42,7 @@ void EditorProcess::start(const QString &program, const QStringList &arguments)
     process->start(program, arguments);
 }
 
-bool EditorProcess::startDetached(const QString &program, const QStringList &arguments)
+bool ExternalProcess::startDetached(const QString &program, const QStringList &arguments)
 {
     if (program.isEmpty()) {
         return false;
@@ -51,7 +51,7 @@ bool EditorProcess::startDetached(const QString &program, const QStringList &arg
     return QProcess::startDetached(program, arguments);
 }
 
-void EditorProcess::stop()
+void ExternalProcess::stop()
 {
     if (process->state() == QProcess::NotRunning) {
         return;
@@ -63,7 +63,7 @@ void EditorProcess::stop()
     }
 }
 
-void EditorProcess::clearWatchedFile()
+void ExternalProcess::clearWatchedFile()
 {
     editedFileChangedTimer->stop();
     pendingEditedFile.clear();
@@ -80,32 +80,32 @@ void EditorProcess::clearWatchedFile()
     }
 }
 
-QByteArray EditorProcess::readAllStandardOutput()
+QByteArray ExternalProcess::readAllStandardOutput()
 {
     return process->readAllStandardOutput();
 }
 
-QByteArray EditorProcess::readAllStandardError()
+QByteArray ExternalProcess::readAllStandardError()
 {
     return process->readAllStandardError();
 }
 
-void EditorProcess::handleStarted()
+void ExternalProcess::handleStarted()
 {
     Q_EMIT processStarted();
 }
 
-void EditorProcess::handleFinished(int exitCode, QProcess::ExitStatus exitStatus)
+void ExternalProcess::handleFinished(int exitCode, QProcess::ExitStatus exitStatus)
 {
     Q_EMIT processFinished(exitCode, exitStatus);
 }
 
-void EditorProcess::handleErrorOccurred(QProcess::ProcessError error)
+void ExternalProcess::handleErrorOccurred(QProcess::ProcessError error)
 {
     Q_EMIT processErrorOccurred(error);
 }
 
-void EditorProcess::handleEditedFileChanged(const QString &file)
+void ExternalProcess::handleEditedFileChanged(const QString &file)
 {
     qDebug() << "Edited file changed:" << file;
     if (QFile::exists(file) && !fileWatcher->files().contains(file)) {
@@ -120,7 +120,7 @@ void EditorProcess::handleEditedFileChanged(const QString &file)
     scheduleEditedFileChanged(file);
 }
 
-void EditorProcess::handleEditedDirectoryChanged(const QString &path)
+void ExternalProcess::handleEditedDirectoryChanged(const QString &path)
 {
     Q_UNUSED(path)
 
@@ -138,12 +138,12 @@ void EditorProcess::handleEditedDirectoryChanged(const QString &path)
     }
 }
 
-void EditorProcess::handleReadyRead()
+void ExternalProcess::handleReadyRead()
 {
     Q_EMIT readyRead();
 }
 
-void EditorProcess::watchFile(const QString &filePath)
+void ExternalProcess::watchFile(const QString &filePath)
 {
     const QFileInfo fileInfo(filePath);
     const QString absoluteFilePath = fileInfo.absoluteFilePath();
@@ -169,13 +169,13 @@ void EditorProcess::watchFile(const QString &filePath)
     }
 }
 
-void EditorProcess::scheduleEditedFileChanged(const QString &filePath)
+void ExternalProcess::scheduleEditedFileChanged(const QString &filePath)
 {
     pendingEditedFile = QFileInfo(filePath).absoluteFilePath();
     editedFileChangedTimer->start();
 }
 
-bool EditorProcess::updateWatchedFileState()
+bool ExternalProcess::updateWatchedFileState()
 {
     const QFileInfo fileInfo(watchedFilePath);
 
@@ -196,4 +196,4 @@ bool EditorProcess::updateWatchedFileState()
     return changed;
 }
 
-#include "moc_editorprocess.cpp"
+#include "moc_externalprocess.cpp"
