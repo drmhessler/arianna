@@ -1592,13 +1592,12 @@ Kirigami.Page {
         function canAnnotateSelection() {
             return !root.readOnly && root.entry.uniqueIdentifier.length > 0 && selection && selection.type === "selection" && selection.value;
         }
-        function saveAnnotation(annotation) {
-            if (!annotation || !annotation.value || root.readOnly || root.entry.uniqueIdentifier.length === 0) {
+        function rememberAnnotation(annotation) {
+            if (!annotation || !annotation.value) {
                 return false;
             }
 
             const copy = cloneAnnotation(annotation);
-            AnnotationStore.saveAnnotation(root.entry.uniqueIdentifier, copy);
             const nextAnnotations = cloneAnnotationsMap();
             nextAnnotations[copy.value] = copy;
 
@@ -1615,6 +1614,15 @@ Kirigami.Page {
             updateNotesModel();
             addAnnotationToView(copy);
             return true;
+        }
+        function saveAnnotation(annotation) {
+            if (!annotation || !annotation.value || root.readOnly || root.entry.uniqueIdentifier.length === 0) {
+                return false;
+            }
+
+            const copy = cloneAnnotation(annotation);
+            AnnotationStore.saveAnnotation(root.entry.uniqueIdentifier, copy);
+            return rememberAnnotation(copy);
         }
         function createAnnotationFromSelection() {
             if (!canAnnotateSelection()) {
@@ -1634,7 +1642,14 @@ Kirigami.Page {
                 created: new Date().toISOString(),
                 modified: ""
             };
-            return saveAnnotation(annotation) ? annotation : null;
+            const expectedRevisionId = AnnotationStore.currentRevisionId(root.entry.uniqueIdentifier);
+            const anchoredAnnotation = AnnotationStore.createAnchoredAnnotation(root.entry.uniqueIdentifier, annotation, expectedRevisionId);
+            if (!anchoredAnnotation || anchoredAnnotation.error) {
+                console.warn("Unable to create anchored annotation:", anchoredAnnotation?.message || "");
+                return null;
+            }
+
+            return rememberAnnotation(anchoredAnnotation) ? anchoredAnnotation : null;
         }
         function updateAnnotationNote(value, note) {
             const annotation = annotationForValue(value);

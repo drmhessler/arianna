@@ -11,6 +11,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
@@ -25,7 +26,9 @@ private Q_SLOTS:
     void testOpenBookCreatesInitialRevision();
     void testTextContentHashIgnoresTechnicalAnchors();
     void testVisibleTextChangeChangesBothHashes();
+    void testCreateAnchorCreatesChildRevision();
     void testStaleExpectedRevisionConflicts();
+    void testFailedAnchorDoesNotCreateRevisionOrEpub();
     void testRevisionRecordsAreImmutable();
 };
 
@@ -38,6 +41,18 @@ static bool isUuidV7(const QUuid &uuid)
 {
     const QString text = uuid.toString(QUuid::WithoutBraces);
     return text.size() > 14 && text.at(14) == QLatin1Char('7');
+}
+
+static QString anchoredEpubPath(const QString &filename, const QString &bookId)
+{
+    QFileInfo fileInfo(filename);
+    QString fileStem = bookId.trimmed();
+    if (fileStem.isEmpty()) {
+        fileStem = fileInfo.completeBaseName();
+    }
+
+    fileStem.replace(QRegularExpression(QStringLiteral("[/\\\\]")), QStringLiteral("_"));
+    return fileInfo.dir().filePath(fileStem + QStringLiteral(".anchored.epub"));
 }
 
 static void writeContainer(KZip &zip)
@@ -197,6 +212,60 @@ void BookTruthStoreTest::testVisibleTextChangeChangesBothHashes()
     QVERIFY(first.documentStateHash != second.documentStateHash);
 }
 
+void BookTruthStoreTest::testCreateAnchorCreatesChildRevision()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString bookId = uniqueBookId(QStringLiteral("anchor"));
+    const QString epubPath = dir.filePath(QStringLiteral("anchor.epub"));
+    const QByteArray chapterDocument = QByteArrayLiteral(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><p>Hello anchored truth.</p></body></html>");
+    QVERIFY(writeTestEpub(epubPath, chapterDocument));
+    addBookEntry(bookId, epubPath);
+
+    BookTruthStore store;
+    const BookSnapshot snapshot = store.openBook(bookId);
+    QVERIFY2(snapshot.success, qPrintable(snapshot.errorMessage));
+
+    const BookCommitResult result = store.createAnchor(bookId, QStringLiteral("epubcfi(/6/2!/2/2,/1:6,/1:14)"), snapshot.revision->revisionId);
+    QVERIFY2(result.success, qPrintable(result.errorMessage));
+    QVERIFY(result.createdAnchorId.has_value());
+    QVERIFY(isUuidV7(*result.createdAnchorId));
+    QVERIFY(isUuidV7(result.newRevisionId));
+    QCOMPARE(result.oldRevisionId, snapshot.revision->revisionId);
+    QVERIFY(result.newRevisionId != snapshot.revision->revisionId);
+    QCOMPARE(result.textContentHash, snapshot.textContentHash);
+    QVERIFY(result.documentStateHash != snapshot.documentStateHash);
+
+    const QList<BookRevision> revisions = BookDatabase::self().bookRevisions(bookId);
+    QCOMPARE(revisions.size(), 2);
+    QVERIFY(revisions.constLast().parentRevisionId.has_value());
+    QCOMPARE(*revisions.constLast().parentRevisionId, snapshot.revision->revisionId);
+    QCOMPARE(revisions.constLast().revisionId, result.newRevisionId);
+    QVERIFY(revisions.constLast().changedObjectId.has_value());
+    QCOMPARE(*revisions.constLast().changedObjectId, *result.createdAnchorId);
+    QCOMPARE(revisions.constLast().changeType, QStringLiteral("annotation-anchor"));
+
+    const QString anchoredPath = anchoredEpubPath(epubPath, bookId);
+    QVERIFY(QFileInfo::exists(anchoredPath));
+
+    KZip anchoredZip(anchoredPath);
+    QVERIFY(anchoredZip.open(QIODevice::ReadOnly));
+    const KArchiveFile *chapter = anchoredZip.directory()->file(QStringLiteral("OEBPS/chapter.xhtml"));
+    QVERIFY(chapter);
+
+    QScopedPointer<QIODevice> device(chapter->createDevice());
+    QVERIFY(device);
+    const QString document = QString::fromUtf8(device->readAll());
+    const QString anchorElementId = QStringLiteral("uuid_") + result.createdAnchorId->toString(QUuid::WithoutBraces);
+    QVERIFY(document.contains(QStringLiteral("id=\"") + anchorElementId + QStringLiteral("\"")));
+    QVERIFY(document.contains(QStringLiteral("data-role=\"anchor\"")));
+    QVERIFY(document.contains(QStringLiteral("data-anchor-type=\"annotation\"")));
+    QVERIFY(document.contains(QStringLiteral(">anchored</span>")));
+}
+
 void BookTruthStoreTest::testStaleExpectedRevisionConflicts()
 {
     QTemporaryDir dir;
@@ -219,6 +288,28 @@ void BookTruthStoreTest::testStaleExpectedRevisionConflicts()
     QVERIFY(result.conflict);
     QCOMPARE(result.oldRevisionId, snapshot.revision->revisionId);
     QCOMPARE(BookDatabase::self().bookRevisions(bookId).size(), 1);
+    QVERIFY(!QFileInfo::exists(anchoredEpubPath(epubPath, bookId)));
+}
+
+void BookTruthStoreTest::testFailedAnchorDoesNotCreateRevisionOrEpub()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString bookId = uniqueBookId(QStringLiteral("failed-anchor"));
+    const QString epubPath = dir.filePath(QStringLiteral("failed-anchor.epub"));
+    QVERIFY(writeTestEpub(epubPath, chapterWithBody(QByteArrayLiteral("<p>Failed anchor visible text.</p>"))));
+    addBookEntry(bookId, epubPath);
+
+    BookTruthStore store;
+    const BookSnapshot snapshot = store.openBook(bookId);
+    QVERIFY2(snapshot.success, qPrintable(snapshot.errorMessage));
+
+    const BookCommitResult result = store.createAnchor(bookId, QStringLiteral("epubcfi(/6/2!/2/2/1:6)"), snapshot.revision->revisionId);
+    QVERIFY(!result.success);
+    QVERIFY(!result.conflict);
+    QCOMPARE(BookDatabase::self().bookRevisions(bookId).size(), 1);
+    QVERIFY(!QFileInfo::exists(anchoredEpubPath(epubPath, bookId)));
 }
 
 void BookTruthStoreTest::testRevisionRecordsAreImmutable()

@@ -1653,9 +1653,49 @@ static void copyDirectoryReplacingFile(KZip &outZip,
     }
 }
 
+static QByteArray createEpubReplacingFile(const KArchiveDirectory *rootFolder, const QString &replacementPath, const QByteArray &replacementData)
+{
+    if (!rootFolder) {
+        qWarning() << "No EPUB root folder available for replacement";
+        return {};
+    }
+
+    QByteArray result;
+    QBuffer buffer(&result);
+    if (!buffer.open(QIODevice::WriteOnly)) {
+        qWarning() << "Unable to open EPUB replacement buffer";
+        return {};
+    }
+
+    KZip outZip(&buffer);
+    if (!outZip.open(QIODevice::WriteOnly)) {
+        qWarning() << "Unable to create replacement EPUB";
+        return {};
+    }
+
+    outZip.writeFile(QStringLiteral("mimetype"), QByteArrayLiteral("application/epub+zip"));
+
+    bool replaced = false;
+    copyDirectoryReplacingFile(outZip, rootFolder, QString(), replacementPath, replacementData, replaced);
+    outZip.close();
+    buffer.close();
+
+    if (!replaced) {
+        qWarning() << "Unable to find replacement document in EPUB" << replacementPath;
+        return {};
+    }
+
+    return result;
+}
+
 static bool
 writeEpubReplacingFile(const QString &outputPath, const KArchiveDirectory *rootFolder, const QString &replacementPath, const QByteArray &replacementData)
 {
+    const QByteArray epubData = createEpubReplacingFile(rootFolder, replacementPath, replacementData);
+    if (epubData.isEmpty()) {
+        return false;
+    }
+
     const QFileInfo outputInfo(outputPath);
     QTemporaryFile tempFile(outputInfo.dir().filePath(outputInfo.fileName() + QStringLiteral(".XXXXXX")));
     tempFile.setAutoRemove(false);
@@ -1665,24 +1705,16 @@ writeEpubReplacingFile(const QString &outputPath, const KArchiveDirectory *rootF
     }
 
     const QString tempPath = tempFile.fileName();
-    tempFile.close();
-
-    KZip outZip(tempPath);
-
-    if (!outZip.open(QIODevice::WriteOnly)) {
-        qWarning() << "Unable to create anchored EPUB" << tempPath;
+    if (tempFile.write(epubData) != epubData.size()) {
+        qWarning() << "Unable to write temporary anchored EPUB" << tempPath << tempFile.errorString();
+        tempFile.close();
         QFile::remove(tempPath);
         return false;
     }
 
-    outZip.writeFile(QStringLiteral("mimetype"), QByteArrayLiteral("application/epub+zip"));
-
-    bool replaced = false;
-    copyDirectoryReplacingFile(outZip, rootFolder, QString(), replacementPath, replacementData, replaced);
-    outZip.close();
-
-    if (!replaced) {
-        qWarning() << "Unable to find replacement document in EPUB" << replacementPath;
+    tempFile.close();
+    if (tempFile.error() != QFileDevice::NoError) {
+        qWarning() << "Unable to finalize temporary anchored EPUB" << tempPath << tempFile.errorString();
         QFile::remove(tempPath);
         return false;
     }
@@ -2105,10 +2137,16 @@ QString EPubContainer::createRangeAnchor(const QString &cfi, const QString &anch
     return anchorId;
 }
 
-QString EPubContainer::createAnnotationAnchor(const QString &cfi)
+QByteArray EPubContainer::createAnnotationAnchoredEpub(const QString &cfi, const QString &anchorId)
 {
     if (!m_rootFolder) {
         qWarning() << "No EPUB root folder available";
+        return {};
+    }
+
+    const QString normalizedAnchorId = anchorId.trimmed();
+    if (normalizedAnchorId.isEmpty()) {
+        qWarning() << "Unable to create annotation anchor without anchor id";
         return {};
     }
 
@@ -2152,24 +2190,86 @@ QString EPubContainer::createAnnotationAnchor(const QString &cfi)
     const CfiBoundary startBoundary = resolveCfiBoundary(doc, startPath);
     const CfiBoundary endBoundary = resolveCfiBoundary(doc, endPath);
 
-    const QString anchorId = QStringLiteral("uuid_") + QUuid::createUuidV7().toString(QUuid::WithoutBraces);
     QString selectedText;
-    const bool anchored = annotateExactInlineElementRange(startBoundary, endBoundary, anchorId, QStringLiteral("annotation"), &selectedText)
-        || wrapSingleTextNodeRange(doc, startBoundary, endBoundary, anchorId, QStringLiteral("annotation"), &selectedText, QStringLiteral("span"))
-        || insertAnnotationBoundaryPair(doc, startBoundary, endBoundary, anchorId);
+    const bool anchored = annotateExactInlineElementRange(startBoundary, endBoundary, normalizedAnchorId, QStringLiteral("annotation"), &selectedText)
+        || wrapSingleTextNodeRange(doc, startBoundary, endBoundary, normalizedAnchorId, QStringLiteral("annotation"), &selectedText, QStringLiteral("span"))
+        || insertAnnotationBoundaryPair(doc, startBoundary, endBoundary, normalizedAnchorId);
     if (!anchored) {
         qWarning() << "Unable to create annotation anchor for CFI range" << cfi << "in" << item.path;
         return {};
     }
 
+    qDebug() << "Prepared annotation anchor" << normalizedAnchorId << "for" << selectedText << "in" << item.path;
+    return createEpubReplacingFile(m_rootFolder, item.path, doc.toByteArray());
+}
+
+QString EPubContainer::createAnnotationAnchor(const QString &cfi)
+{
+    if (!m_rootFolder) {
+        qWarning() << "No EPUB root folder available";
+        return {};
+    }
+
+    const QString anchorId = QStringLiteral("uuid_") + QUuid::createUuidV7().toString(QUuid::WithoutBraces);
+    const QByteArray anchoredEpub = createAnnotationAnchoredEpub(cfi, anchorId);
+    if (anchoredEpub.isEmpty()) {
+        return {};
+    }
+
     const QString bookId = m_metadata.value(QStringLiteral("unique-identifier")).value(0, QFileInfo(m_filename).completeBaseName());
     const QString outputPath = anchoredEpubOutputPath(m_filename, bookId);
-    if (!writeEpubReplacingFile(outputPath, m_rootFolder, item.path, doc.toByteArray())) {
+    const QFileInfo outputInfo(outputPath);
+    QTemporaryFile tempFile(outputInfo.dir().filePath(outputInfo.fileName() + QStringLiteral(".XXXXXX")));
+    tempFile.setAutoRemove(false);
+    if (!tempFile.open()) {
+        qWarning() << "Unable to create temporary annotation anchored EPUB" << outputPath << tempFile.errorString();
+        return {};
+    }
+
+    const QString tempPath = tempFile.fileName();
+    if (tempFile.write(anchoredEpub) != anchoredEpub.size()) {
+        qWarning() << "Unable to write temporary annotation anchored EPUB" << tempPath << tempFile.errorString();
+        tempFile.close();
+        QFile::remove(tempPath);
+        return {};
+    }
+
+    tempFile.close();
+    if (tempFile.error() != QFileDevice::NoError) {
+        qWarning() << "Unable to finalize temporary annotation anchored EPUB" << tempPath << tempFile.errorString();
+        QFile::remove(tempPath);
+        return {};
+    }
+
+    QString backupPath;
+    if (QFileInfo::exists(outputPath)) {
+        backupPath = outputPath + QStringLiteral(".bak-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+        if (!QFile::rename(outputPath, backupPath)) {
+            qWarning() << "Unable to move existing annotation anchored EPUB aside" << outputPath << backupPath;
+            QFile::remove(tempPath);
+            return {};
+        }
+    }
+
+    if (!QFile::rename(tempPath, outputPath)) {
+        qWarning() << "Unable to move annotation anchored EPUB into place" << tempPath << outputPath;
+        if (!backupPath.isEmpty()) {
+            QFile::rename(backupPath, outputPath);
+        }
+        QFile::remove(tempPath);
+        return {};
+    }
+
+    if (!backupPath.isEmpty()) {
+        QFile::remove(backupPath);
+    }
+
+    if (!QFileInfo::exists(outputPath)) {
         qWarning() << "Unable to write annotation anchored EPUB" << outputPath;
         return {};
     }
 
-    qDebug() << "Created annotation anchor" << anchorId << "for" << selectedText << "in" << outputPath;
+    qDebug() << "Created annotation anchor" << anchorId << "in" << outputPath;
     return anchorId;
 }
 

@@ -128,6 +128,7 @@ public:
     QString createAnchor(const QString &cfi);
     QString createAnchor(const QString &cfi, const QString &anchorType);
     QString createBookrefAnchor(const QString &cfi, const QString &targetLocation, bool isCrossReference);
+    QByteArray createAnnotationAnchoredEpub(const QString &cfi, const QString &anchorId);
     QString createAnnotationAnchor(const QString &cfi);
     QVector<TargetAnchorInfo> referenceableTargets();
     QVector<TargetAnchorInfo> targetAnchors() const;

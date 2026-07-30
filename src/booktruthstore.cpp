@@ -7,9 +7,13 @@
 #include "epubcontainer.h"
 
 #include <QCryptographicHash>
+#include <QDir>
 #include <QDomDocument>
+#include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QStringList>
+#include <QTemporaryFile>
 
 #include <algorithm>
 
@@ -21,6 +25,150 @@ struct BookHashes {
     QByteArray textContentHash;
     QByteArray documentStateHash;
 };
+
+struct FileReplacementBackup {
+    QString targetPath;
+    QString backupPath;
+    bool hadOriginal = false;
+};
+
+static QString anchoredEpubPath(const QString &filename, const QString &bookId)
+{
+    QFileInfo fileInfo(filename);
+    QString fileStem = bookId.trimmed();
+    if (fileStem.isEmpty()) {
+        fileStem = fileInfo.completeBaseName();
+    }
+
+    fileStem.replace(QRegularExpression(QStringLiteral("[/\\\\]")), QStringLiteral("_"));
+    return QFileInfo(fileInfo.dir().filePath(fileStem + QStringLiteral(".anchored.epub"))).absoluteFilePath();
+}
+
+static QString authoritativeEpubPath(const QString &filename, const QString &bookId)
+{
+    const QString anchoredPath = anchoredEpubPath(filename, bookId);
+    if (QFileInfo::exists(anchoredPath)) {
+        return anchoredPath;
+    }
+
+    return QFileInfo(filename).absoluteFilePath();
+}
+
+static QString uuidToDatabaseString(const QUuid &uuid)
+{
+    return uuid.toString(QUuid::WithoutBraces);
+}
+
+static QString anchorElementId(const QUuid &uuid)
+{
+    return QStringLiteral("uuid_") + uuidToDatabaseString(uuid);
+}
+
+static QString writeTemporaryEpub(const QString &targetPath, const QByteArray &data, QString *errorMessage)
+{
+    const QFileInfo targetInfo(targetPath);
+    QDir targetDir = targetInfo.dir();
+    if (!targetDir.exists() && !targetDir.mkpath(QStringLiteral("."))) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Unable to create EPUB target directory: %1").arg(targetDir.absolutePath());
+        }
+        return {};
+    }
+
+    QTemporaryFile tempFile(targetDir.filePath(targetInfo.fileName() + QStringLiteral(".XXXXXX")));
+    tempFile.setAutoRemove(false);
+    if (!tempFile.open()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Unable to create temporary EPUB: %1").arg(tempFile.errorString());
+        }
+        return {};
+    }
+
+    const QString tempPath = tempFile.fileName();
+    if (tempFile.write(data) != data.size()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Unable to write temporary EPUB: %1").arg(tempFile.errorString());
+        }
+        tempFile.close();
+        QFile::remove(tempPath);
+        return {};
+    }
+
+    tempFile.close();
+    if (tempFile.error() != QFileDevice::NoError) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Unable to finalize temporary EPUB: %1").arg(tempFile.errorString());
+        }
+        QFile::remove(tempPath);
+        return {};
+    }
+
+    return tempPath;
+}
+
+static bool replaceFileWithBackup(const QString &replacementPath, const QString &targetPath, FileReplacementBackup &backup, QString *errorMessage)
+{
+    backup.targetPath = targetPath;
+    backup.backupPath.clear();
+    backup.hadOriginal = false;
+
+    if (QFileInfo::exists(targetPath)) {
+        backup.backupPath = targetPath + QStringLiteral(".bak-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+        if (!QFile::rename(targetPath, backup.backupPath)) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Unable to move existing EPUB aside: %1").arg(targetPath);
+            }
+            return false;
+        }
+        backup.hadOriginal = true;
+    }
+
+    if (!QFile::rename(replacementPath, targetPath)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Unable to move anchored EPUB into place: %1").arg(targetPath);
+        }
+        if (backup.hadOriginal) {
+            QFile::rename(backup.backupPath, targetPath);
+        }
+        QFile::remove(replacementPath);
+        return false;
+    }
+
+    return true;
+}
+
+static bool rollbackFileReplacement(const FileReplacementBackup &backup, QString *errorMessage)
+{
+    if (backup.targetPath.isEmpty()) {
+        return true;
+    }
+
+    bool rolledBack = true;
+    QStringList errors;
+
+    if (QFileInfo::exists(backup.targetPath) && !QFile::remove(backup.targetPath)) {
+        rolledBack = false;
+        errors.append(QStringLiteral("unable to remove new EPUB %1").arg(backup.targetPath));
+    }
+
+    if (backup.hadOriginal && !QFile::rename(backup.backupPath, backup.targetPath)) {
+        rolledBack = false;
+        errors.append(QStringLiteral("unable to restore previous EPUB %1").arg(backup.targetPath));
+    }
+
+    if (!rolledBack && errorMessage) {
+        *errorMessage = errors.join(QStringLiteral("; "));
+    }
+
+    return rolledBack;
+}
+
+static void discardFileReplacementBackup(const FileReplacementBackup &backup)
+{
+    if (backup.hadOriginal && !backup.backupPath.isEmpty() && !QFile::remove(backup.backupPath)) {
+        qWarning() << "Unable to remove EPUB replacement backup" << backup.backupPath;
+    }
+}
 
 static bool isDocumentItem(const EpubItem &item)
 {
@@ -186,7 +334,7 @@ BookSnapshot BookTruthStore::openBook(const QString &bookId) const
         return snapshot;
     }
 
-    snapshot.filename = entry->filename;
+    snapshot.filename = authoritativeEpubPath(entry->filename, bookId);
     const QFileInfo fileInfo(snapshot.filename);
     if (!fileInfo.exists() || !fileInfo.isFile()) {
         snapshot.errorMessage = QStringLiteral("EPUB file does not exist: %1").arg(snapshot.filename);
@@ -220,27 +368,102 @@ BookSnapshot BookTruthStore::openBook(const QString &bookId) const
 
 BookCommitResult BookTruthStore::createAnchor(const QString &bookId, const QString &cfiRange, const QUuid &expectedRevisionId)
 {
-    Q_UNUSED(cfiRange)
-
     BookCommitResult result;
 
-    const std::optional<BookRevision> revision = currentRevision(bookId);
-    if (!revision) {
-        result.errorMessage = QStringLiteral("No current revision found for book: %1").arg(bookId);
+    if (bookId.isEmpty() || cfiRange.isEmpty()) {
+        result.errorMessage = QStringLiteral("Unable to create annotation anchor without book id and CFI range");
         return result;
     }
 
-    result.oldRevisionId = revision->revisionId;
-    result.textContentHash = revision->textContentHash;
-    result.documentStateHash = revision->documentStateHash;
+    const auto entry = BookDatabase::self().loadEntryByUniqueIdentifier(bookId);
+    if (!entry) {
+        result.errorMessage = QStringLiteral("No book entry found for identifier: %1").arg(bookId);
+        return result;
+    }
 
-    if (revision->revisionId != expectedRevisionId) {
+    const BookSnapshot snapshot = openBook(bookId);
+    if (!snapshot.success || !snapshot.revision) {
+        result.errorMessage = snapshot.errorMessage.isEmpty() ? QStringLiteral("No current revision found for book: %1").arg(bookId) : snapshot.errorMessage;
+        return result;
+    }
+
+    const BookRevision currentRevision = *snapshot.revision;
+    result.oldRevisionId = currentRevision.revisionId;
+    result.textContentHash = currentRevision.textContentHash;
+    result.documentStateHash = currentRevision.documentStateHash;
+
+    if (expectedRevisionId.isNull() || currentRevision.revisionId != expectedRevisionId) {
         result.conflict = true;
         result.errorMessage = QStringLiteral("Expected revision does not match current book revision");
         return result;
     }
 
-    result.errorMessage = QStringLiteral("Transactional anchor creation is implemented in the next refactoring step");
+    const QString outputPath = anchoredEpubPath(entry->filename, bookId);
+    const QString inputPath = authoritativeEpubPath(entry->filename, bookId);
+    const QUuid anchorUuid = QUuid::createUuidV7();
+    const QString elementId = anchorElementId(anchorUuid);
+
+    QByteArray anchoredEpub;
+    {
+        EPubContainer container(nullptr);
+        if (!container.openFile(inputPath)) {
+            result.errorMessage = QStringLiteral("Unable to open EPUB for annotation anchor creation: %1").arg(inputPath);
+            return result;
+        }
+
+        anchoredEpub = container.createAnnotationAnchoredEpub(cfiRange, elementId);
+    }
+
+    if (anchoredEpub.isEmpty()) {
+        result.errorMessage = QStringLiteral("Unable to create annotation anchor for selected CFI range");
+        return result;
+    }
+
+    QString temporaryError;
+    const QString temporaryPath = writeTemporaryEpub(outputPath, anchoredEpub, &temporaryError);
+    if (temporaryPath.isEmpty()) {
+        result.errorMessage = temporaryError;
+        return result;
+    }
+
+    const BookHashes newHashes = calculateHashes(temporaryPath);
+    if (!newHashes.success) {
+        QFile::remove(temporaryPath);
+        result.errorMessage = newHashes.errorMessage;
+        return result;
+    }
+
+    BookRevision newRevision;
+    newRevision.revisionId = QUuid::createUuidV7();
+    newRevision.bookId = bookId;
+    newRevision.parentRevisionId = currentRevision.revisionId;
+    newRevision.textContentHash = newHashes.textContentHash;
+    newRevision.documentStateHash = newHashes.documentStateHash;
+    newRevision.changeType = QStringLiteral("annotation-anchor");
+    newRevision.changedObjectId = anchorUuid;
+
+    FileReplacementBackup backup;
+    QString replacementError;
+    if (!replaceFileWithBackup(temporaryPath, outputPath, backup, &replacementError)) {
+        result.errorMessage = replacementError;
+        return result;
+    }
+
+    if (!BookDatabase::self().saveBookRevision(newRevision)) {
+        QString rollbackError;
+        const bool rolledBack = rollbackFileReplacement(backup, &rollbackError);
+        result.errorMessage = rolledBack ? QStringLiteral("Unable to persist annotation anchor revision")
+                                         : QStringLiteral("Unable to persist annotation anchor revision; rollback failed: %1").arg(rollbackError);
+        return result;
+    }
+
+    discardFileReplacementBackup(backup);
+
+    result.success = true;
+    result.newRevisionId = newRevision.revisionId;
+    result.textContentHash = newRevision.textContentHash;
+    result.documentStateHash = newRevision.documentStateHash;
+    result.createdAnchorId = anchorUuid;
     return result;
 }
 

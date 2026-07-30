@@ -78,6 +78,24 @@ public:
         fieldNames.append(name);
     }
 
+    bool ensureTableColumn(const QString &table, const QString &name, const QString &definition)
+    {
+        QSqlQuery columns(QStringLiteral("PRAGMA table_info(\"%1\")").arg(table));
+        while (columns.next()) {
+            if (columns.value(1).toString().compare(name, Qt::CaseInsensitive) == 0) {
+                return true;
+            }
+        }
+
+        QSqlQuery alterQuery;
+        if (!alterQuery.exec(QStringLiteral("ALTER TABLE \"%1\" ADD COLUMN %2").arg(table, definition))) {
+            qCDebug(ARIANNA_LOG) << "Unable to add database column" << table << name << alterQuery.lastError();
+            return false;
+        }
+
+        return true;
+    }
+
     bool prepareDb()
     {
         if (!db.open()) {
@@ -285,6 +303,10 @@ public:
         if (!q.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS annotations("
                                    "bookId varchar not null, "
                                    "value varchar not null, "
+                                   "annotationId varchar, "
+                                   "anchorId varchar, "
+                                   "createdInRevisionId varchar, "
+                                   "lastValidatedRevisionId varchar, "
                                    "color varchar, "
                                    "text text, "
                                    "note text, "
@@ -295,7 +317,10 @@ public:
             return false;
         }
 
-        return true;
+        return ensureTableColumn(QStringLiteral("annotations"), QStringLiteral("annotationId"), QStringLiteral("annotationId varchar"))
+            && ensureTableColumn(QStringLiteral("annotations"), QStringLiteral("anchorId"), QStringLiteral("anchorId varchar"))
+            && ensureTableColumn(QStringLiteral("annotations"), QStringLiteral("createdInRevisionId"), QStringLiteral("createdInRevisionId varchar"))
+            && ensureTableColumn(QStringLiteral("annotations"), QStringLiteral("lastValidatedRevisionId"), QStringLiteral("lastValidatedRevisionId varchar"));
     }
 
     void closeDb()
@@ -718,7 +743,7 @@ QVariantList BookDatabase::loadAnnotations(const QString &bookId)
     QVariantList annotations;
     QSqlQuery annotationQuery;
     annotationQuery.prepare(
-        QStringLiteral("SELECT value, color, text, note, created, modified "
+        QStringLiteral("SELECT value, color, text, note, created, modified, annotationId, anchorId, createdInRevisionId, lastValidatedRevisionId "
                        "FROM annotations WHERE bookId=:bookId "
                        "ORDER BY created ASC, rowid ASC"));
     annotationQuery.bindValue(QStringLiteral(":bookId"), bookId);
@@ -731,6 +756,10 @@ QVariantList BookDatabase::loadAnnotations(const QString &bookId)
             annotation.insert(QStringLiteral("note"), annotationQuery.value(3).toString());
             annotation.insert(QStringLiteral("created"), annotationQuery.value(4).toString());
             annotation.insert(QStringLiteral("modified"), annotationQuery.value(5).toString());
+            annotation.insert(QStringLiteral("annotationId"), annotationQuery.value(6).toString());
+            annotation.insert(QStringLiteral("anchorId"), annotationQuery.value(7).toString());
+            annotation.insert(QStringLiteral("createdInRevisionId"), annotationQuery.value(8).toString());
+            annotation.insert(QStringLiteral("lastValidatedRevisionId"), annotationQuery.value(9).toString());
             annotations.append(annotation);
         }
     } else {
@@ -757,16 +786,28 @@ void BookDatabase::saveAnnotation(const QString &bookId, const QVariantMap &anno
     const QString modified = annotation.value(QStringLiteral("modified")).toString();
 
     QSqlQuery annotationQuery;
-    annotationQuery.prepare(
-        QStringLiteral("INSERT INTO annotations(bookId, value, color, text, note, created, modified) "
-                       "VALUES(:bookId, :value, :color, :text, :note, :created, :modified) "
-                       "ON CONFLICT(bookId, value) DO UPDATE SET "
-                       "color=excluded.color, "
-                       "text=excluded.text, "
-                       "note=excluded.note, "
-                       "modified=excluded.modified"));
+    annotationQuery.prepare(QStringLiteral(
+        "INSERT INTO annotations(bookId, value, annotationId, anchorId, createdInRevisionId, lastValidatedRevisionId, color, text, note, created, modified) "
+        "VALUES(:bookId, :value, :annotationId, :anchorId, :createdInRevisionId, :lastValidatedRevisionId, :color, :text, :note, :created, :modified) "
+        "ON CONFLICT(bookId, value) DO UPDATE SET "
+        "annotationId=CASE WHEN excluded.annotationId IS NOT NULL AND excluded.annotationId != '' "
+        "THEN excluded.annotationId ELSE annotations.annotationId END, "
+        "anchorId=CASE WHEN excluded.anchorId IS NOT NULL AND excluded.anchorId != '' "
+        "THEN excluded.anchorId ELSE annotations.anchorId END, "
+        "createdInRevisionId=CASE WHEN excluded.createdInRevisionId IS NOT NULL AND excluded.createdInRevisionId != '' "
+        "THEN excluded.createdInRevisionId ELSE annotations.createdInRevisionId END, "
+        "lastValidatedRevisionId=CASE WHEN excluded.lastValidatedRevisionId IS NOT NULL AND excluded.lastValidatedRevisionId != '' "
+        "THEN excluded.lastValidatedRevisionId ELSE annotations.lastValidatedRevisionId END, "
+        "color=excluded.color, "
+        "text=excluded.text, "
+        "note=excluded.note, "
+        "modified=excluded.modified"));
     annotationQuery.bindValue(QStringLiteral(":bookId"), bookId);
     annotationQuery.bindValue(QStringLiteral(":value"), value);
+    annotationQuery.bindValue(QStringLiteral(":annotationId"), annotation.value(QStringLiteral("annotationId")).toString());
+    annotationQuery.bindValue(QStringLiteral(":anchorId"), annotation.value(QStringLiteral("anchorId")).toString());
+    annotationQuery.bindValue(QStringLiteral(":createdInRevisionId"), annotation.value(QStringLiteral("createdInRevisionId")).toString());
+    annotationQuery.bindValue(QStringLiteral(":lastValidatedRevisionId"), annotation.value(QStringLiteral("lastValidatedRevisionId")).toString());
     annotationQuery.bindValue(QStringLiteral(":color"), annotation.value(QStringLiteral("color"), QStringLiteral("yellow")).toString());
     annotationQuery.bindValue(QStringLiteral(":text"), annotation.value(QStringLiteral("text")).toString());
     annotationQuery.bindValue(QStringLiteral(":note"), annotation.value(QStringLiteral("note")).toString());

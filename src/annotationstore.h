@@ -18,6 +18,8 @@ public:
     explicit AnnotationStore(QObject *parent = nullptr);
 
     Q_INVOKABLE QVariantList loadAnnotations(const QString &bookId) const;
+    Q_INVOKABLE QString currentRevisionId(const QString &bookId) const;
+    Q_INVOKABLE QVariantMap createAnchoredAnnotation(const QString &bookId, const QVariantMap &annotation, const QString &expectedRevisionId);
     Q_INVOKABLE void saveAnnotation(const QString &bookId, const QVariantMap &annotation);
     Q_INVOKABLE void removeAnnotation(const QString &bookId, const QString &value);
 
