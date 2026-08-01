@@ -1120,13 +1120,13 @@ class Reader {
     #handleEvents() {
         this.view.addEventListener('relocate', e => {
             const { heads, feet } = this.view.renderer
-            if (heads) {
+            if (heads?.length > 0) {
                 const { tocItem } = e.detail
                 heads.at(-1).innerText = tocItem?.label ?? ''
                 if (heads.length > 1)
                     heads[0].innerText = this.book.metadata.title
             }
-            if (feet) {
+            if (feet?.length > 0) {
                 const { pageItem, location: { current, next, total } } = e.detail
                 if (pageItem) {
                     // only show page number at the end

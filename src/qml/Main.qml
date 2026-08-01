@@ -17,6 +17,7 @@ Kirigami.ApplicationWindow {
     property bool isLoading: true
     property string librarySearchText: ""
     property bool readerFullScreen: false
+    readonly property bool directStartupReader: typeof startupDirectReaderMode !== "undefined" && startupDirectReaderMode === true
 
     title: i18n("Arianna")
 
@@ -288,6 +289,7 @@ Kirigami.ApplicationWindow {
                 flushReadingPosition();
                 destroySaveLocationTimer();
                 root.title = i18n("Arianna");
+                root.ensureLibraryPageVisible();
             });
         }
 
@@ -311,10 +313,45 @@ Kirigami.ApplicationWindow {
         openBookPage(filename, locations, currentLocation, entry, readOnly, sourceTitle);
     }
 
+    function showHomeLibraryPage() {
+        root.readerFullScreen = false;
+        root.pageStack.replace(Qt.resolvedUrl('./LibraryPage.qml'), {
+            pageTitle: i18n("Home"),
+            bookListModel: root.bookListModel,
+            addBookAction: addBookAction
+        });
+    }
+
+    function ensureLibraryPageVisible() {
+        const currentPage = root.pageStack.currentItem;
+        if (currentPage && currentPage.startupPlaceholder === true) {
+            root.showHomeLibraryPage();
+        }
+    }
+
     width: Kirigami.Units.gridUnit * 65
     height: Kirigami.Units.gridUnit * 45
     minimumWidth: Kirigami.Units.gridUnit * 20
     minimumHeight: Kirigami.Units.gridUnit * 30
+
+    Component {
+        id: startupPlaceholderPage
+
+        Kirigami.Page {
+            readonly property bool startupPlaceholder: true
+            readonly property bool hideSidebar: true
+            readonly property bool centerToolbarActions: true
+        }
+    }
+
+    Component {
+        id: libraryInitialPage
+
+        LibraryPage {
+            bookListModel: root.bookListModel
+            addBookAction: addBookAction
+        }
+    }
 
     pageStack {
         defaultColumnWidth: Kirigami.Units.gridUnit * 30
@@ -327,10 +364,7 @@ Kirigami.ApplicationWindow {
                 return root.centerToolbarActionsFor(currentPage) ? Qt.AlignHCenter : Qt.AlignRight;
             }
         }
-        initialPage: LibraryPage {
-            bookListModel: root.bookListModel
-            addBookAction: addBookAction
-        }
+        initialPage: root.directStartupReader ? startupPlaceholderPage : libraryInitialPage
     }
 
     readonly property BookListModel bookListModel: BookListModel {

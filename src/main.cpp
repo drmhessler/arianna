@@ -38,6 +38,7 @@
 #include <QTimer>
 #include <csignal>
 #include <memory>
+#include <optional>
 
 #include <KConfigGroup>
 #include <QCommandLineOption>
@@ -335,6 +336,21 @@ static bool argumentsRequestReadOnly(const QStringList &arguments)
     return false;
 }
 
+static bool argumentsRequestOpenLastOpenedBook(const QStringList &arguments)
+{
+    for (int i = 1; i < arguments.size(); ++i) {
+        const QString &argument = arguments.at(i);
+        if (argument == QStringLiteral("--")) {
+            return false;
+        }
+        if (argument == QStringLiteral("--open-last-opened-book")) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static QString fileArgumentFromActivationArguments(const QStringList &arguments)
 {
     bool endOfOptions = false;
@@ -355,6 +371,48 @@ static QString fileArgumentFromActivationArguments(const QStringList &arguments)
     }
 
     return {};
+}
+
+static std::optional<BookEntry> lastOpenedBookEntry()
+{
+    const QList<BookEntry> entries = BookDatabase::self().loadEntries();
+    BookEntry lastOpenedEntry;
+    bool found = false;
+
+    for (const BookEntry &entry : entries) {
+        if (!entry.lastOpenedTime.isValid() || entry.filename.isEmpty()) {
+            continue;
+        }
+        if (!QFileInfo::exists(entry.filename)) {
+            continue;
+        }
+        if (!found || entry.lastOpenedTime > lastOpenedEntry.lastOpenedTime) {
+            lastOpenedEntry = entry;
+            found = true;
+        }
+    }
+
+    if (!found) {
+        return std::nullopt;
+    }
+
+    return lastOpenedEntry;
+}
+
+static bool openLastOpenedBook(Navigation *navigation)
+{
+    if (!navigation) {
+        return false;
+    }
+
+    const std::optional<BookEntry> entry = lastOpenedBookEntry();
+    if (!entry) {
+        qWarning() << "No last opened Arianna book found";
+        return false;
+    }
+
+    Q_EMIT navigation->openBook(entry->filename, entry->locations, entry->currentLocation, *entry, false);
+    return true;
 }
 
 static void
@@ -457,8 +515,10 @@ int main(int argc, char *argv[])
     QCommandLineOption bookServerOnlyOption(QStringLiteral("bookserver"), i18n("Start only the local book server without opening the reader UI"));
     QCommandLineOption readOnlyOption(QStringList{QStringLiteral("read-only"), QStringLiteral("open-read-only")},
                                       i18n("Open the book without adding it to the library"));
+    QCommandLineOption openLastOpenedBookOption(QStringLiteral("open-last-opened-book"), i18n("Open the most recently opened library book"));
     parser.addOption(bookServerOnlyOption);
     parser.addOption(readOnlyOption);
+    parser.addOption(openLastOpenedBookOption);
 
     about.setupCommandLine(&parser);
     parser.process(*app);
@@ -466,6 +526,12 @@ int main(int argc, char *argv[])
 
     const bool bookServerOnly = parser.isSet(bookServerOnlyOption);
     const bool readOnly = parser.isSet(readOnlyOption);
+    const bool openLastOpenedBookRequested = parser.isSet(openLastOpenedBookOption);
+    const QStringList args = parser.positionalArguments();
+    const QString startupFileName = args.isEmpty() ? QString() : localFilePathFromArgument(args.at(0));
+    const bool startupFileOpenRequested = !startupFileName.isEmpty() && QFileInfo::exists(startupFileName);
+    const std::optional<BookEntry> startupLastOpenedEntry = openLastOpenedBookRequested ? lastOpenedBookEntry() : std::optional<BookEntry>();
+    const bool startupDirectReaderMode = startupFileOpenRequested || startupLastOpenedEntry.has_value();
     const QString serverToken = persistentServerToken();
     std::signal(SIGINT, handleUnixSignal);
     std::signal(SIGTERM, handleUnixSignal);
@@ -495,6 +561,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("serverToken"), serverToken);
     engine.rootContext()->setContextProperty(QStringLiteral("bookServerSessionToken"), sessionToken);
     engine.rootContext()->setContextProperty(QStringLiteral("bookServerPort"), 45961);
+    engine.rootContext()->setContextProperty(QStringLiteral("startupDirectReaderMode"), startupDirectReaderMode);
     engine.loadFromModule("org.kde.arianna", "Main");
     if (engine.rootObjects().isEmpty()) {
         return -1;
@@ -523,15 +590,18 @@ int main(int argc, char *argv[])
                                  const QString fileArgument = fileArgumentFromActivationArguments(arguments);
                                  if (!fileArgument.isEmpty()) {
                                      openBookArgument(navigation, fileArgument, workingDirectory, argumentsRequestReadOnly(arguments), sessionToken);
+                                 } else if (argumentsRequestOpenLastOpenedBook(arguments)) {
+                                     openLastOpenedBook(navigation);
                                  }
                                  return;
                              }
                          }
                      });
 
-    const QStringList args = parser.positionalArguments();
     if (!args.isEmpty()) {
         openBookArgument(navigation, args[0], {}, readOnly, sessionToken);
+    } else if (openLastOpenedBookRequested) {
+        openLastOpenedBook(navigation);
     }
 
     return QCoreApplication::exec();
