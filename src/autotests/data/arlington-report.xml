@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<report>
+  <buildInformation>
+    <releaseDetails id="validation-model-arlington" version="1.30.2" buildDate="2026-06-22T13:10:00+02:00"></releaseDetails>
+  </buildInformation>
+  <jobs>
+    <job>
+      <item size="1932305">
+        <name>/home/markus/Documents/test2_backup.pdf</name>
+      </item>
+      <arlingtonReport jobEndStatus="normal" profileName="Arlington PDF 1.4 profile" statement="PDF file is not compliant with Profile requirements." isCompliant="false" extensions="">
+        <details deviations="5">
+          <rule specification="PDF Reference 1.4" clause="FontType0" testNumber="1" status="failed" deviations="2">
+            <description>FontType0 shall not contain entries except BaseFont, DescendantFonts, Encoding, Subtype, ToUnicode, Type and 2nd/3rd class names</description>
+            <object>AFontType0</object>
+            <test>keysString == '' || keysString.split('&amp;').filter(elem =&gt; elem != 'BaseFont' &amp;&amp; elem != 'DescendantFonts' &amp;&amp; elem != 'Encoding' &amp;&amp; elem != 'Subtype' &amp;&amp; elem != 'ToUnicode' &amp;&amp; elem != 'Type' &amp;&amp; /^(XX|(.{4}[_:]))/.test(elem) == false).length == 0</test>
+            <check status="failed">
+              <context>root/FileTrailer[0]{FileTrailer}/Root[0](ACatalog 1 0 obj){Root}/Pages[0](APageTreeNodeRoot 3 0 obj){Pages}/Kids[0]{Kids}/Entries[0](AArrayOfPageTreeNodeKidsEntry 5 0 obj){0}/Entry[0](APageTreeNode 5 0 obj){0}/Kids[0]{Kids}/Entries[4](AArrayOfPageTreeNodeKidsEntry 31 0 obj){4}/Entry[0](APageObject 31 0 obj){4}/Resources[0](AResource 200 0 obj){Resources}/Font[0]{Font}/Entries[0](AFontMapEntry 56 0 obj){FF1}/Entry[0](AFontType0 56 0 obj){FF1}</context>
+              <errorMessage>FontType0 contains entry(ies) Name</errorMessage>
+            </check>
+            <check status="failed">
+              <context>root/FileTrailer[0]{FileTrailer}/Root[0](ACatalog 1 0 obj){Root}/Pages[0](APageTreeNodeRoot 3 0 obj){Pages}/Kids[0]{Kids}/Entries[0](AArrayOfPageTreeNodeKidsEntry 5 0 obj){0}/Entry[0](APageTreeNode 5 0 obj){0}/Kids[0]{Kids}/Entries[4](AArrayOfPageTreeNodeKidsEntry 31 0 obj){4}/Entry[0](APageObject 31 0 obj){4}/Resources[0](AResource 200 0 obj){Resources}/Font[0]{Font}/Entries[2](AFontMapEntry 65 0 obj){FF2}/Entry[0](AFontType0 65 0 obj){FF2}</context>
+              <errorMessage>FontType0 contains entry(ies) Name</errorMessage>
+            </check>
+          </rule>
+          <rule specification="PDF Reference 1.4" clause="PageTreeNode-Resources" testNumber="8" status="failed" deviations="2">
+            <description>Entry Resources in PageTreeNode shall have type Dictionary</description>
+            <object>APageTreeNode</object>
+            <check status="failed">
+              <context>root/FileTrailer[0]{FileTrailer}/Root[0](ACatalog 1 0 obj){Root}/Pages[0](APageTreeNodeRoot 3 0 obj){Pages}/Kids[0]{Kids}/Entries[0](AArrayOfPageTreeNodeKidsEntry 5 0 obj){0}/Entry[0](APageTreeNode 5 0 obj){0}</context>
+              <errorMessage>Entry Resources in PageTreeNode has type null instead of type Dictionary</errorMessage>
+            </check>
+            <check status="failed">
+              <context>root/FileTrailer[0]{FileTrailer}/Root[0](ACatalog 1 0 obj){Root}/Pages[0](APageTreeNodeRoot 3 0 obj){Pages}/Kids[0]{Kids}/Entries[1](AArrayOfPageTreeNodeKidsEntry 6 0 obj){1}/Entry[0](APageTreeNode 6 0 obj){1}</context>
+              <errorMessage>Entry Resources in PageTreeNode has type null instead of type Dictionary</errorMessage>
+            </check>
+          </rule>
+          <rule specification="PDF Reference 1.4" clause="PageTreeNodeRoot-Resources" testNumber="8" status="failed" deviations="1">
+            <description>Entry Resources in PageTreeNodeRoot shall have type Dictionary</description>
+            <object>APageTreeNodeRoot</object>
+            <check status="failed">
+              <context>root/FileTrailer[0]{FileTrailer}/Root[0](ACatalog 1 0 obj){Root}/Pages[0](APageTreeNodeRoot 3 0 obj){Pages}</context>
+              <errorMessage>Entry Resources in PageTreeNodeRoot has type null instead of type Dictionary</errorMessage>
+            </check>
+          </rule>
+        </details>
+      </arlingtonReport>
+      <duration start="1788961254506" finish="1788961255045">00:00:00.539</duration>
+    </job>
+  </jobs>
+</report>
